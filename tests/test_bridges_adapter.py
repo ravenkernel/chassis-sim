@@ -524,3 +524,69 @@ def test_get_scan_and_sensor_reading_passthrough() -> None:
     assert bridge.get_sensor_reading() is reading
     inner.sensor_reading = None
     assert bridge.get_sensor_reading() is None
+
+
+# ── 6. 可选传感器：内层没有该能力时返回 None，而不是 AttributeError（0.1.4）──
+class _NoSensorBridge(_RecordingBridge):
+    """内层桥**没有**可选传感器能力：撤掉覆盖，只剩基类的非抽象默认实现。"""
+
+    get_sensor_reading = SensorProvider.get_sensor_reading
+
+
+class _DuckNoSensorBridge:
+    """主仓 NumpySimBridge 的形态：duck-typed、不继承 SensorProvider、无该方法。"""
+
+    _ABSENT = "get_sensor_reading"
+
+    def __init__(self, delegate: SensorProvider) -> None:
+        self._delegate = delegate
+
+    def __getattr__(self, name: str) -> Any:
+        if name == self._ABSENT:
+            raise AttributeError(name)
+        return getattr(self._delegate, name)
+
+
+def test_sensor_reading_none_when_inner_lacks_capability() -> None:
+    """内层只有基类默认实现 / 连该属性都没有 ⇒ None（0.1.4 前是 AttributeError）。"""
+    chassis = AckermannChassis()
+    base_only = PhysicalCommandBridge(_NoSensorBridge(), chassis)
+    assert base_only.get_sensor_reading() is None
+
+    duck = PhysicalCommandBridge(
+        _DuckNoSensorBridge(_PhysicalAckermannBridge(chassis)), chassis
+    )
+    assert not hasattr(duck.inner, "get_sensor_reading")
+    assert duck.get_sensor_reading() is None
+
+
+def test_sensor_reading_forwarded_from_capable_inner() -> None:
+    """内层有该方法且返回 dict ⇒ 原样转发（同一个对象，不拷贝）。"""
+    reading = {"imu": {"ax": 0.1, "yaw_rate": 0.0}, "scan": None}
+    inner = _RecordingBridge(sensor_reading=reading)
+    bridge = PhysicalCommandBridge(inner, AckermannChassis())
+    assert bridge.get_sensor_reading() is reading
+    assert inner.calls == {"get_sensor_reading": 1}
+
+
+def test_env_steps_with_inner_without_sensor_capability() -> None:
+    """原始症状回归：无传感器能力的内层 + 适配器 + env，10 步不得 AttributeError。"""
+    chassis = AckermannChassis()
+    inner = _DuckNoSensorBridge(_PhysicalAckermannBridge(chassis))
+    env = ChassisSimEnv(chassis, bridge=PhysicalCommandBridge(inner, chassis))
+    env.reset(seed=SEED)
+    steps = 0
+    try:
+        for i in range(10):
+            obs, reward, terminated, truncated, info = env.step(
+                np.array([0.1 * (i % 3), 0.5])
+            )
+            steps += 1
+            assert obs is not None and reward is not None
+            for sensor_key in ("imu", "wheel", "scan", "scan_meta"):
+                assert sensor_key not in info
+            if terminated or truncated:
+                break
+    finally:
+        env.close()
+    assert steps >= 5

@@ -46,8 +46,10 @@ class PhysicalCommandBridge(SensorProvider):
     物理向量按车型（`Chassis.physical_action()`）：
     ackermann `[delta, v]`、diff_drive `[v, omega]`、mecanum `[v, vy, omega]`。
 
-    除了 `step` / `reset` / `set_dynamic_obstacles`，其余成员都是**逐字透传**
-    （同一个返回对象，不拷贝、不重建）：适配器只改动作通路，不改传感器通路。
+    除了 `step` / `reset` / `set_dynamic_obstacles` / `get_sensor_reading`，
+    其余成员都是**逐字透传**（同一个返回对象，不拷贝、不重建）：适配器只改动作
+    通路，不改传感器通路。`get_sensor_reading` 多一层可选能力判定：内层没有
+    该方法时返回 `None`（详见该方法），因为"没有传感器"是合法状态，而不是错误。
 
     Attributes:
         inner: 内层物理桥；每次 `step` 收到一个 float64 ndarray，顺序见上。
@@ -157,8 +159,24 @@ class PhysicalCommandBridge(SensorProvider):
         return self.inner.get_scan(side)
 
     def get_sensor_reading(self) -> dict[str, Any] | None:
-        """透传内层桥的可选传感器读数（`None` 也照原样返回）。"""
-        return self.inner.get_sensor_reading()
+        """转发内层桥的可选传感器读数；内层不支持该能力时返回 `None`。
+
+        传感器是**可选能力**（与 `set_dynamic_obstacles` 的"必须响亮报错"
+        正相反）：内层桥压根没有这个方法（主仓 NumpySimBridge / ir-sim
+        SimBridge 就是这样），或只继承了 `SensorProvider` 的非抽象默认实现，
+        都视为"未启用可选传感器"，返回 `None` 而不是抛 `AttributeError` ——
+        否则 env 侧 `getattr` 兜底（`envs/chassis_env.py:1735`）会被本类的
+        具体方法架空，第一步就崩。
+
+        Returns:
+            内层读数（`None` 也照原样返回），或内层不支持时的 `None`。
+        """
+        impl = getattr(self.inner, "get_sensor_reading", None)
+        if impl is None or (
+            getattr(impl, "__func__", None) is SensorProvider.get_sensor_reading
+        ):
+            return None
+        return impl()
 
     def set_dynamic_obstacles(self, specs: list | None = None) -> None:
         """转发给内层桥；内层不支持时**响亮地**报错，不静默跳过。

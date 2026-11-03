@@ -297,8 +297,10 @@ _REWARD_PARAM_TYPES: dict[str, str] = {
 }
 
 # 本包会读的 train.yaml 段（train.yaml 里还有 sac_ln/redq/... 等本包不消费的段，
-# 因此**只校验这些段内部**的未知键，不做顶层差集 —— 这是与 OmegaConf 全量
-# schema 的有意差异，见回报）。
+# 因此既不做顶层差集，也**不因段内未知键报错**：这些段属于宿主项目，同一段里
+# 还住着 display.sentinel / auto_curriculum.phase_* / network.*_hidden 之类本包
+# 不消费的键。下面的类型表只约束"本包认识的键"的类型 —— 这是与 OmegaConf 全量
+# schema 的有意差异，见 _validate_train_yaml 的 docstring）。
 _TRAIN_SECTION_TYPES: dict[str, dict[str, str]] = {
     "env": {
         "delta_max": "float",
@@ -363,9 +365,19 @@ def _check_type(value: Any, expect: str, path: str) -> None:
 
 
 def _validate_section(
-    raw: Any, section: str, types: dict[str, str], filename: str
+    raw: Any,
+    section: str,
+    types: dict[str, str],
+    filename: str,
+    allow_unknown: bool = False,
 ) -> None:
-    """校验一个段：形状是 dict、无未知键、已知键类型正确。"""
+    """校验一个段：形状是 dict、已知键类型正确、（默认）不允许未知键。
+
+    Args:
+        allow_unknown: 为 True 时**不因未知键报错**（该段来自宿主项目的文件，
+            可能带本包不消费的键），但本包**认识的键仍逐个做类型校验**；
+            为 False 时保持"未知键当场红"的严格语义。
+    """
     if raw is None:
         return
     if not isinstance(raw, dict):
@@ -373,13 +385,16 @@ def _validate_section(
             f"{filename}: {section} 段必须是映射（dict），"
             f"收到 {type(raw).__name__}: {raw!r}"
         )
-    unknown = sorted(set(raw) - set(types))
-    if unknown:
-        raise ValueError(
-            f"{filename}: {section} 段存在未知键 {unknown}；允许的键为 {sorted(types)}"
-        )
+    if not allow_unknown:
+        unknown = sorted(set(raw) - set(types))
+        if unknown:
+            raise ValueError(
+                f"{filename}: {section} 段存在未知键 {unknown}；"
+                f"允许的键为 {sorted(types)}"
+            )
     for key, value in raw.items():
-        _check_type(value, types[key], f"{filename}: {section}.{key}")
+        if key in types:
+            _check_type(value, types[key], f"{filename}: {section}.{key}")
 
 
 def _validate_reward_yaml(reward_raw: Any, filename: str = "reward.yaml") -> None:
@@ -414,13 +429,27 @@ def _validate_reward_yaml(reward_raw: Any, filename: str = "reward.yaml") -> Non
 
 
 def _validate_train_yaml(train_raw: Any, filename: str = "train.yaml") -> None:
-    """只校验本包消费的段（见 _TRAIN_SECTION_TYPES 的注释）。"""
+    """只校验本包消费的段（见 _TRAIN_SECTION_TYPES 的注释）。
+
+    **未知键在这里被忽略**（`allow_unknown=True`）：train.yaml 是**宿主项目**的
+    文件（主仓的 config/ 目录），本包只消费其中与 env 有关的一部分 —— 同一段里
+    还住着 display.sentinel、auto_curriculum.phase_a、network.actor_hidden 之类
+    本包不读的键。因它们报错会让整个目录读不了，等于让宿主换不成 "Host 拥有
+    train.yaml，本包只取自己要的那几项"。
+
+    但"忽略陌生键"**不等于"整段不校验"**：本包认识的键仍逐个做类型校验，写错
+    类型照旧当场 ValueError（见 tests/test_envs_config.py 的正反两向对照）。
+    与 reward.yaml 的区别是有意的：reward.yaml 是本包自己的配置，错键/未知键
+    必须当场红（`_validate_reward_yaml` 一点没放宽）。
+    """
     if not isinstance(train_raw, dict):
         raise ValueError(  # noqa: TRY004
             f"{filename}: 顶层必须是映射（dict），收到 {type(train_raw).__name__}"
         )
     for section, types in _TRAIN_SECTION_TYPES.items():
-        _validate_section(train_raw.get(section), section, types, filename)
+        _validate_section(
+            train_raw.get(section), section, types, filename, allow_unknown=True
+        )
 
 
 def from_config_dir(config_dir: str | Path) -> tuple[EnvConfig, RewardConfig]:

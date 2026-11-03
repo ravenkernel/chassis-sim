@@ -22,6 +22,7 @@ from chassis_sim.config import (
     from_config_dir,
     load_default_config,
 )
+from chassis_sim.envs import ObsLayout, compute_obs_dims
 
 PKG_DIR = Path(pkg.__file__).resolve().parent
 
@@ -217,9 +218,7 @@ class TestFromConfigDir:
         assert env.wheelbase == pytest.approx(0.2)
         assert env.lidar_max_range == pytest.approx(8.0)  # 取**第一个** lidar2d
 
-    @pytest.mark.parametrize(
-        "key", ["obs_danger", "obs_safe", "stop_threshold"]
-    )
+    @pytest.mark.parametrize("key", ["obs_danger", "obs_safe", "stop_threshold"])
     def test_removed_obs_thresholds_are_rejected(self, tmp_path, key):
         """0.1.1 删掉的 3 个死键：再写进 reward.yaml 必须被当**未知键**拒绝。
 
@@ -279,13 +278,14 @@ class TestValidation:
         with pytest.raises(ValueError, match=needle):
             from_config_dir(tmp_path)
 
-    def test_train_yaml_unknown_env_key_rejected(self, tmp_path):
+    def test_train_yaml_unknown_key_ignored(self, tmp_path):
+        """0.1.4：train.yaml 属宿主项目，段内未知键忽略（认识的键仍生效）。"""
         _write_minimal(tmp_path)
         (tmp_path / "train.yaml").write_text(
             "env:\n  v_max: 1.2\n  not_an_env_key: 3\n", encoding="utf-8"
         )
-        with pytest.raises(ValueError, match="未知键"):
-            from_config_dir(tmp_path)
+        env, _ = from_config_dir(tmp_path)
+        assert env.v_max == pytest.approx(1.2)
 
     def test_train_yaml_wrong_type_rejected(self, tmp_path):
         _write_minimal(tmp_path)
@@ -468,3 +468,98 @@ class TestNoDeadRewardKwargs:
 
         assert reward_kwargs_not_accepted({"bogus_key": 1}) == ["bogus_key"]
         assert reward_kwargs_not_accepted({"obstacle_range": 0.8}) == []
+
+
+# ── 0.1.4：train.yaml 是宿主项目的文件（陌生键忽略，认识的键仍校验）──────────
+HOST_TRAIN_YAML = """\
+env:
+  v_max: 1.7
+  curvature_action: true
+privileged:
+  enabled: true
+  n_bins: 24
+domain_rand:
+  enabled: false
+display:
+  envs_panel: false
+  sentinel: 41              # 主仓有、本包不消费
+auto_curriculum:
+  enabled: false
+  phase_a: 10               # 同上
+  phase_b: 20
+  transition_ratio: 0.5
+  transition_patience: 3
+path:
+  lookahead_distance: 1.1
+network:
+  max_path_points: 12       # 本包认识的键（消费者：observation.compute_obs_dims）
+  actor_hidden: [256, 256]  # 主仓有、本包不消费
+  critic_hidden: [512, 512]
+"""
+
+
+def _copy_packaged_yamls(tmp_path: Path) -> Path:
+    """把包内的 env.yaml / reward.yaml 原样复制到 tmp_path（train.yaml 另写）。"""
+    for name in ("env.yaml", "reward.yaml"):
+        (tmp_path / name).write_text(
+            (PKG_DIR / name).read_text(encoding="utf-8"), encoding="utf-8"
+        )
+    return tmp_path
+
+
+class TestHostOwnedTrainYaml:
+    """主仓 train.yaml 带本包不消费的键 ⇒ 仍读得通；认识的键类型错照样红。
+
+    背景（0.1.4 前的原始症状）：主仓 config/train.yaml 的 display 段带
+    `sentinel`、auto_curriculum 段带 `phase_a/phase_b/transition_*`、network 段带
+    `actor_hidden/critic_hidden`，_validate_section 一律按"未知键"拒绝 ⇒
+    from_config_dir 整个目录读不了。修法不是"train.yaml 整段不校验"，而是
+    "陌生键忽略、认识的键仍逐个校验类型"——reward.yaml 的严格性一点没动。
+    """
+
+    def test_host_keys_ignored_known_keys_honored(self, tmp_path):
+        _copy_packaged_yamls(tmp_path)
+        (tmp_path / "train.yaml").write_text(HOST_TRAIN_YAML, encoding="utf-8")
+
+        env, _ = from_config_dir(tmp_path)
+
+        # 认识的键照旧生效："忽略陌生键"没有变成"整段不读"
+        assert env.v_max == pytest.approx(1.7)
+        assert env.curvature_action is True
+        assert env.privileged_enabled is True
+        assert env.privileged_bins == 24
+        assert env.domain_rand_enabled is False
+        assert env.envs_panel_enabled is False
+        assert env.curriculum_enabled is False
+
+        # network.max_path_points 在本包的真实消费者是 compute_obs_dims
+        # （EnvConfig 不含该字段）：必须真取到 12，而不是回落到默认 30。
+        base_dim, _ = compute_obs_dims(str(tmp_path))
+        assert base_dim == ObsLayout(max_path_points=12).total_dim
+        assert base_dim != ObsLayout().total_dim
+
+    def test_known_key_wrong_type_still_rejected(self, tmp_path):
+        """反向对照 1：陌生键带了一堆，认识的键写错类型仍要报（不是整段不校验）。"""
+        _copy_packaged_yamls(tmp_path)
+        (tmp_path / "train.yaml").write_text(
+            HOST_TRAIN_YAML.replace("  v_max: 1.7", '  v_max: "abc"'),
+            encoding="utf-8",
+        )
+        with pytest.raises(ValueError) as excinfo:
+            from_config_dir(tmp_path)
+        msg = str(excinfo.value)
+        assert "config/train.yaml" in msg
+        assert "env.v_max" in msg
+        assert "类型必须是 float" in msg
+
+    def test_reward_yaml_unknown_key_still_rejected(self, tmp_path):
+        """反向对照 2：同一个目录里 train.yaml 放宽，reward.yaml 的未知键仍当场红。"""
+        _copy_packaged_yamls(tmp_path)
+        (tmp_path / "train.yaml").write_text(HOST_TRAIN_YAML, encoding="utf-8")
+        reward_path = tmp_path / "reward.yaml"
+        raw = yaml.safe_load(reward_path.read_text(encoding="utf-8"))
+        raw["reward_extra"] = {}  # 顶层未知键（本包自己的配置，不许放宽）
+        reward_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+        with pytest.raises(ValueError, match="未知键"):
+            from_config_dir(tmp_path)
