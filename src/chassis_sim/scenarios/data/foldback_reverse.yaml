@@ -1,0 +1,18 @@
+# planning 场景（stage 4，requires: planning）：foldback_reverse
+# 宽角度折返/倒车（stage 4）：count [10,16]、obstacle_spacing 0.62、
+# start_region [0.5,2.5]x[0.5,2.5]、goal_region [7.5,9.5]x[7.5,9.5]、
+# reverse_probability 0.3、path_reverse_probability 0.3
+#
+# 地图本体不落进 YAML：obstacles 故意留空、path.type=stage 只声明"取哪个 stage"，
+# 真正的障碍与参考路径由 chassis_sim.planning.MapGenerator 现场生成（依赖 numba，属
+# [planning] extra）。world_bounds 作为生成区域传给 MapGenerator。
+name: foldback_reverse
+description: 宽角度折返/倒车（课程 stage 4）—— 由 MapGenerator 现场生成
+world_bounds: [0.0, 10.0, 0.0, 10.0]
+obstacles: []
+path:
+  type: stage
+  params:
+    stage: foldback_reverse
+seed: 0
+requires: planning

@@ -1,0 +1,17 @@
+# planning 场景（stage 2，requires: planning）：obstacles_dense
+# 密集静态障碍（stage 2，主收敛目标）：count [9,15]、obstacle_spacing 0.65、
+# position_margin 1.0、start_goal_clearance 0.7、max_iterations 4000
+#
+# 地图本体不落进 YAML：obstacles 故意留空、path.type=stage 只声明"取哪个 stage"，
+# 真正的障碍与参考路径由 chassis_sim.planning.MapGenerator 现场生成（依赖 numba，属
+# [planning] extra）。world_bounds 作为生成区域传给 MapGenerator。
+name: obstacles_dense
+description: 密集静态障碍（课程 stage 2，主收敛目标）—— 由 MapGenerator 现场生成
+world_bounds: [0.0, 10.0, 0.0, 10.0]
+obstacles: []
+path:
+  type: stage
+  params:
+    stage: obstacles_dense
+seed: 0
+requires: planning

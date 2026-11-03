@@ -1,0 +1,274 @@
+# ============================================================================
+# 奖励函数配置 — 极简模型 (2026-08-16 v5)
+#
+# 核心原则：
+#   1. Reward 定义目标，不教方法 — 删除所有硬编码驾驶规则
+#   2. 7 分量：cte + heading + obstacle + progress + steer + goal_proximity + step（drive 已删）
+#      progress 与 goal_proximity 均为势能型（Φ(s')−Φ(s)），保证总量有界、无法通过徘徊刷分
+#   3. 无动态权重、无布尔分支、无不可微点
+#
+# 总奖励 = r_cte + r_heading + r_obstacle + r_progress + r_steer + r_goal_prox + r_step
+# r_goal_prox (2026-08-19 势能化) = w × [1/(d_t+0.5) − 1/(d_{t−1}+0.5)]，总量有界、不可刷分
+# ============================================================================
+
+# ── 各分量权重 ──────────────────────────────────────────────────────────
+reward_weights:
+  drive: 0                      # 已删除——与 progress 共线 (v×cosθ≈位移/dt)，progress 更鲁棒
+  cte_penalty: 6.0             # 二次型 CTE² 惩罚权重——近路径梯度≈0，远路径加速惩罚
+                               # 2026-10-30 由 3.0 抬到 6.0：实测 |CTE| 中位 0.17 m 处单步罚
+                               # 只有 −0.07，把横向误差压到专家级（0.012 m）整回合也只多拿
+                               # +10 raw ≈ 一次成功的 2.6% ⇒ 贴线在奖励里几乎无价
+                               # （docs/2026-10-29-贴线精度诊断.md §4）。副作用：更保守/更多超时。
+  heading_penalty: 0.3         # 偏航惩罚权重（前进段）——防低速平行漂移
+  heading_penalty_reverse: 0.5 # 倒车段的偏航惩罚权重 (2026-10-05 新增)。
+                               # 实测 run025 在倒车段上 82~90% 的步是"掉头正着开"
+                               # （横向 |CTE| 只有 0.16~0.27m，位置势能完全看不出差别），
+                               # 说明 0.3 的偏航罚不足以抵消"掉头比倒车好开"的收益。
+                               # 取值 0.5（**保守值**，2026-10-05 由用户选定）：
+                               #   最大 -1.57/步（前进段仍是 -0.94/步），
+                               #   与 env 侧"档位闸门"（反向前进不给正向 arc_progress）
+                               #   叠加后，正确倒车比作弊每步好约 1.87。
+                               #   我先按 1.0 实现（单步差约 3.4），但 stage4 上非合规步
+                               #   每步多罚约 2.2、171 步 ≈ -376/回合，力度偏大；
+                               #   0.5 是留了余量的版本。若倒车段合规率仍上不去，
+                               #   再调回 1.0（改这一个数即可）。代码默认值仍是 1.0
+                               #   （envs/reward.py:65/203），**以 YAML 为准**。
+  obstacle: 1.5                # 指数避障惩罚权重 (d=0→-1.0)
+  progress: 4.0                # 路径进度奖励——势能型 arc_progress=Φ(s_{t+1})−Φ(s_t)，前进+/后退−/振荡零 (2026-08-16 替代速率型)
+  steer_penalty: 0.5           # 转向惩罚——防直线画龙 (abs(prev_delta))
+                               # 2026-10-30 由 0.1 抬到 0.5：策略把转向学成了满舵 PWM
+                               # （a0 每约 3 步换号、|a0| 均值 0.79），满舵步罚分
+                               # −0.043 → −0.215/步，等于给"来回打死方向"直接定价。
+  collision: 1.0               # 碰撞终止惩罚权重
+  goal: 1.0                    # 到达目标终止奖励权重
+  goal_heading: 1.0            # 到达目标时朝向对齐奖励权重
+  alive: 0.0                   # 禁用存活奖励
+  stuck: 1.0                   # 卡住终止惩罚权重
+  timeout: 1.0                 # 超时终止惩罚权重
+  path_deviation: 1.0          # 路径偏离终止惩罚权重
+  goal_proximity: 2.0          # 终点距离势能权重 (2026-08-19 势能化, 修 B7 刷分漏洞):
+                               #   r = w×[Φ(d_t) − Φ(d_{t−1})], Φ(d) = 1/(d+0.5)
+                               #   旧形式 w/(d+0.5) 为恒定稠密加成 → 1.5m 处悬停 400 步白拿 +400
+                               #   势能总量有界 = w×[Φ(d_T) − Φ(d_0)] ≤ w×(1/0.5) = 4.0
+                               #   2m 内势能差上限 = 2.0×(2.0 − 0.4) = 3.2；恒距悬停每步 ≈ 0
+                               #   逼近为正 / 远离为负 / 徘徊净零；随 d 自然衰减故不再用 near_goal 门控
+
+# ── 数值参数 ────────────────────────────────────────────────────────────
+reward_params:
+  dense_scale: 1.0             # 稠密奖励不缩放
+
+  cte_range: 4.0               # CTE 归一化分母 (m) — 保留兼容，代码不再读取
+  cte_delta: 0.5               # Huber 转捩点 (m) — 保留兼容，代码不再读取
+  failure_dense_cap: 0.12       # 失败回合的稠密累计"每步额度" C = 该值×max_steps
+                               # 2026-10-23 诊断：0.0 → 0.12（重新开启）。诊断实测 run100（700k）
+                               # 的 episode 回报：collision 均值 −57.2（37 步）/ timeout 均值
+                               # −302.1（300 步）⇒ 撞车比超时便宜 5.3 倍，即"早死更便宜"。
+                               # 本项让失败代价不再随步数线性增长（C = 0.12×500 = 60）。
+                               # 历史（2026-10-05 为何一度关闭）：不设上限时退款在终止步一次
+                               # 冲 +220~+3562，把"长失败回路的前一步"变成价值最高的状态
+                               # ⇒ 现在**必须**配 failure_dense_refund_cap（见下）。
+                               # 0 = 关闭（回退到 2026-10-05~10-23 的行为）。
+  failure_dense_refund_cap: 120.0  # 失败补偿的单次退款上限 (2026-10-05 引入, 2026-10-23 设为 120)
+                               # 不设上限时终止步退款实测达 +3562（= goal_bonus 的 8.9×），
+                               # 把"长失败回路的前一步"变成 MDP 里价值最高的状态（+534 缩放后），
+                               # 并让 4.2% 的 target 撞上 +150 上限。
+                               # 设 120 后终止奖励上界 = −100×stage_scale 基项 + 120×comp_scale，
+                               # 即 stage≥3 碰撞/超时 ≤ +20（×reward_scale 0.15 后 ≤ +3），
+                               # 不再有千级尖峰。0 = 不限（回退旧行为，**不要**与 cap>0 同时用）。
+  failure_time_compensation: 0.0  # 时间税补回倍率 (2026-10-23 补进 YAML)
+                               # 该参数 reward.py 一直在读、RewardConfig 也早已白名单，但
+                               # reward.yaml 里从来没有这个键 ⇒ 两个失败补偿参数只有一半真能
+                               # 从 YAML 配。0.0 = 关闭（实测方向与目标相反：把"早失败少付的
+                               # 时间税"又罚一遍，25/120 步失败差反而 7.5 → 9.8）。
+  path_d_max: 4.0              # CTE 观测归一化除数 (m)，对齐 cte_range
+
+  # 指数避障范围 (m) — 2026-10-05 标定 1.5 → 0.8（用户拍板方向：「obstacle 的 range
+  # 降低一些，碰撞检测不用太严厉，稍微离障碍物近点也可以只要不碰到」）。
+  # ⚠ 收窄的只是**软惩罚的作用范围**；物理碰撞判定（_check_collision / SAT 足迹 /
+  #   collision_penalty）一律未动。权重 obstacle=1.5 也未动 ⇒ d=0 处最大值仍 -1.50。
+  # 为什么必须收窄（真 numpy 环境 × 真 stage4/5 地图 × PurePursuit oracle 实测，
+  # 每阶段 16 回合、对照两遍轨迹逐位一致；脚本 /tmp/calib_measure.py）：
+  #   · 参考路径**自身**的净空 mu=0.75m / p50=0.71m / min=0.17m，36.6% 的路点 <0.6m
+  #     ⇒ range=1.5 时"照着参考路径正常行驶"每步就被扣 -0.93/步；
+  #   · 成功回合的总稠密罚分 -0.75/步里 obstacle 一项就是 -0.75/步（占 94%~100%），
+  #     其余 6 项净和 ≈ 0 —— 即"锅几乎全在这一项"；
+  #   · range=0.8 后逐距离：d=1.5m → -0.23、d=1.0m → -0.43、d=0.6m → -0.71、
+  #     d=0.3m → -1.03、d=0.1m → -1.32、d=0 → -1.50
+  #     ⇒ 贴路径（≳1.2m）基本无感，真靠近（<0.6m）照样罚得动。
+  obstacle_range: 0.8
+
+  # ── 终点附近（near_goal = 距终点 < 2m）的 obstacle 项门控 (P2-14, 2026-10-23) ──
+  # 事实（读码核实 envs/reward.py 的 compute）：near_goal 只影响 obstacle 一项，
+  # 其它分量照算；两条分支——
+  #   factor == 0 → **整项清零**（不是"衰减到 0"，也不留残值）：实测终点前一步
+  #                 obstacle 由 −1.3237 直接变 0.0，即"终点附近撞不撞无所谓"；
+  #   factor  > 0 → r_obstacle *= max(factor, goal_dist/obstacle_near_goal_range)，
+  #                 即以 factor 为**下限**的线性衰减（越近折扣越大，但永不归零）。
+  # 这两个参数此前只写在 RewardCalculator.__init__ 的 **kwargs 里：RewardConfig
+  # 白名单与 reward.yaml 都没有它们 ⇒ 不可配、不可见，行为被硬钉死。
+  # **默认 0.0 = 保持当前行为不变**（本轮只做"可见 + 可配"，不改标定结论）。
+  #   认为"终点附近撞不撞无所谓"是有意设计 → 保持 0.0；
+  #   希望终点附近仍保留避障梯度 → 设 0.2~0.5（= 最多打 2~5 折，但不归零）。
+  # 注：是否真生效还取决于 env 侧是否把该字段转发给 RewardCalculator
+  #     （2026-10-23 的 2 行 getattr 转发由 X6 在 envs/ackermann_env.py 落地）。
+  # ── 速度感知障碍惩罚 (2026-10-23) ─────────────────────────────────────
+  # 旧公式 obstacle = -w_obs × exp(-d/range) **只看距离**：同一个位置上
+  # "全速冲过"与"减速蹭过"的即时罚分完全相同 ⇒ critic 的价格信号里没有任何
+  # "该减速"的经济理由（Q 校准审计实测：a1 网格上 92.9% 的状态 argmax 落在
+  # 边界 +1.0 最大速度，内部点合计 <1%）。
+  #
+  # 开启后（power > 0）：
+  #     factor = 1 + (|v| / v_max) ** obstacle_speed_power      ∈ [1, 2]
+  #       |v| = 0（静止/极慢）  → factor = 1 → 罚分与旧公式**逐位相同**
+  #       |v| = v_max（满速）    → factor = 2 → 罚分翻倍
+  #     v 取该步**实际执行**的车速（env 侧 raw['odometry'][3]，经加速度限幅后），
+  #     v_max 取 env 配置（train.yaml env.v_max = 1.0）。
+  #     用 |v| 而不是 v：**倒车贴近障碍同样该罚**（档位与风险无关）。
+  #
+  # **0.0 = 关闭 = 默认 = 生产行为逐位不变**（compute() 里整段跳过，不乘 1.0）。
+  # 校验：≥ 0，非法值在**配置加载期**被 training/config.py 拒掉。
+  #
+  # ⚠ 选值前必读（2026-10-23 实测，真 stage1 地图 + 真 RewardCalculator，18 个
+  #   成功回合 / 2838 步，脚本 /tmp/measure_speed_power.py）：
+  #   · 逐**步**看（固定步数、只换速度）：本项让"减速"的即时罚分变轻
+  #     （d=0.2m 处 p=1：全速 -2.3364 → 降到 35% 速度 -1.5771，差 +0.7593，
+  #      ×reward_scale 后 +0.114）。旧公式下这个差**恒为 0**。
+  #   · 逐**米**看（同样走完这段路，慢就得多走几步）：每米成本 ∝ (1+u^p)/u，
+  #     u=|v|/v_max。p=1 时降到 35% 速度仍比满速贵 1.93×，降到 70% 贵 1.21×
+  #     ⇒ **p=1 不会让"减速"在经济上划算**，只会加一个逐步的局部梯度。
+  #   · 想真的让"减速更划算"，需要 u^p < 2u−1（只有 u>0.5 才可能）：
+  #        p=3 → 降到 70% 时 0.959（开始划算）；p=4 → 0.886。
+  #     实测整回合口径：风险区降到 70%，p=3 时 0.99×（打平）、p=4 时 0.97×。
+  #   · 代价：p 越大，满速端 d(factor)/du = p 越陡 ⇒ Q 在 a1≈+1 附近更陡，
+  #     可能把现在的"边界 argmax"换成更硬的 bang-bang。建议先跑 p=3 的 A/B。
+  #   · 上限：不强制校验，但 >2 就是"过度放大满速端梯度"区间（除非专门做 A/B）。
+  # 一句话：p=1 ≈ "把障碍罚分整体放大一倍 + 一点点速度梯度"；要改 argmax 用 p≈3。
+  # 不改标定：obstacle_range=0.8 / obstacle=1.5 一律未动（本开关只叠一个 ≤2 的因子）。
+  # 三向一致：本键 / RewardConfig.obstacle_speed_power /
+  # _SRewardParams.obstacle_speed_power / RewardCalculator 签名默认 / env 侧转发
+  # （tests/test_obstacle_speed_power.py 锁住）。
+  obstacle_speed_power: 0.0
+  # ── 前进段倒退的专项定价（2026-10-29）───────────────────────────────
+  # r_reverse = -w × min(1, |v|/v_max)，**仅当 path_dir>0（路径要求前进）且 v<0**。
+  # 为什么需要单独一项（而不是调大 progress 权重）：
+  #   arc_progress 是**路径比例**（每步 0.0018~0.0106），所以 progress 项在倒退时
+  #   只有 -0.007~-0.042/步；×3 也才 -0.02~-0.13/步，结构上到不了"倒退有代价"。
+  # 实证（run110 最后 20 万步，stage=obstacles_dense，10031 episodes）：
+  #   撞墙全部 n=825 len46.5 R=-144.3；<30 步撞墙 n=400(48.5%) R=-130.1；
+  #   走满 300 步超时 n=117 R=-169.6 ⇒ 早死比熬到超时高 44 分；
+  #   起点 27~37% 的确定性动作给出 v<0（预览 step_990080：21 步倒 1.9 m 撞墙）。
+  # 取值：v_max=1.0 ⇒ 2.5 表示满速倒退 -2.5/步；那集 21 步约 -47 ⇒
+  #   总回报 -144.8→约 -192，从此"倒退撞墙"严格劣于"走满超时"。
+  # 0.0 = 关闭（默认 = 逐位不变）。只罚前进段倒退 ⇒ 倒车段正确倒车不受影响；
+  # "倒车段掉头正着开"仍由 heading_penalty_reverse 负责。
+  # 三向一致：本键 / RewardConfig.reverse_motion_penalty /
+  # _SRewardParams.reverse_motion_penalty / RewardCalculator 签名默认 / env 侧转发
+  # （tests/test_reverse_motion_penalty.py 锁住）。
+  reverse_motion_penalty: 2.5
+
+  obstacle_near_goal_factor: 0.0
+  # 上述线性衰减的分母 (m)：仅在 factor > 0 时生效；2.0 与 env 侧 near_goal 判定阈值一致。
+  obstacle_near_goal_range: 2.0
+
+  step_penalty: -0.02          # 微小时间税——抑制原地振荡（2026-07-19 恢复）
+  # 到达时间奖金乘数 (2026-10-05: 40.0 → 0.0)
+  # 为什么关掉：省 40 步 = 时间奖金 40×(40/500)=+3.2 + 时间税 +0.8 +
+  # γ=0.995 把 +238 终点奖励提前到账 ≈ +43 ⇒ 抄近道净赚 ≈ +47/回合；
+  # 而离开路径 1m 只罚 -3/步 ⇒ 15 步内抄完就净赚。时间红利是
+  # "抄近道"的第二个驱动器（第一个是稠密分按步累计，见 reward.py
+  # 的失败时刻补偿）。0.0 = 关闭（不再有"越早到越赚"）。
+  # 注意：goal_proximity 不是原因，它已势能化（整回合上界 4.0），别再动它。
+  goal_time_bonus: 0.0         # 到达时间奖金乘数 (0 = 关闭)
+
+  # 终止事件 — 失败惩罚统一 × stage_scale + 撞墙附加罚 + 超时下限
+  # 【2026-10-23 失败经济学】三条一起才成立：
+  #     collision_terminal = collision_penalty × stage_scale − collision_surcharge
+  #     timeout_terminal   = min(−timeout_min_penalty,
+  #                              timeout_penalty × stage_scale × (1 − arc_completion))
+  #   ⇒ margin = timeout − collision
+  #            = 100·s + surcharge + min(−P, −100·s·(1−ac))
+  #            ≥ min(S, 100·stage_scale_floor + S − P) = min(60, 20+60−30) = 50
+  #     与 stage、与进度**无关**地成立。
+  #   旧公式下"撞墙严格更贵"只在 stage_scale > 1−ac 时成立（stage0 要 ac>0.8），
+  #   于是策略学会了用撞车结束回合（论文实测：策略 180 集只超时 1 次，
+  #   DWA/MPC/PP/PP+avoid 超时占 25–60%；实测 stage2 撞车 −106.8(62 步) vs
+  #   超时 −131.9(300 步) —— 刹车挽回只比撞上去多 25 分）。
+  #   只把 timeout 也乘 stage_scale **还不够**：低阶段基项掉到 −20·(1−ac)，叠上
+  #   failure_dense_refund_cap=120 足以让"悬停到超时"的净回报翻正（实测 +1.7）
+  #   ⇒ 所以再加 timeout_min_penalty 这道下限（失败回合净回报为正 = 历史上每次都是 bug）。
+  # stage_scale = clip(stage/3, stage_scale_floor, 1.0)，stage 必须由 make_env(stage_index=...) 注入
+  # (2026-08-19 B6 修复：此前恒为 -1 → 恒下限，碰撞只罚 -20)
+  #   stage 0 → 0.2000 → 碰撞 −80.00    超时 −30.00 (任意 ac)
+  #   stage 1 → 0.3333 → 碰撞 −93.33    超时 −33.33 (ac=0) → −30.00 (ac≥0.10)
+  #   stage 2 → 0.6667 → 碰撞 −126.67   超时 −66.67 (ac=0) → −30.00 (ac≥0.55)
+  #   stage 3/4/5 → 1.0000 → 碰撞 −160.00  超时 −100.00 (ac=0) → −30.00 (ac≥0.70)
+  #   ⚠ stage≥3 且 ac ≤ 0.7 时 timeout 项与旧实现 −100×(1−ac) **逐位相同**；
+  #     ac > 0.7 被下限抬到 −30（有意为之：否则"走到 90% 再超时"只罚 −10，
+  #     抵不过 +120 的失败退款）。
+
+  # ── stage_scale 的**下限**（失败惩罚随课程放大的起步值，2026-10-23 可配）──
+  # 这个 0.2 原先是 envs/reward.py 里的硬编码字面量 np.clip(..., 0.2, 1.0)：
+  # 不可配、不可见、无法校验。现提为 reward_params 的键，**默认值不变**
+  # ⇒ 生产行为逐位不变（stage0 碰撞仍为 -20.0）。
+  # 为什么它值得调（"早死更便宜"的算术根源，**2026-10-23 之前的口径**）：
+  #   stage0 碰撞基项 = -100×0.2 = -20，而 timeout 基项 -100×(1-ac) **不乘**
+  #   stage_scale ⇒ 两者天生差 4.75 倍；再叠加 300 步稠密罚（实测约 -242），
+  #   实测 run100：collision 均值 -57.2（37 步）vs timeout -302.1（300 步）= 5.28×。
+  #   调大下限 = 只抬高**低阶段**的失败代价，不改任何 per-step 稠密分。
+  # ⚠ 2026-10-23 起 timeout **也乘 stage_scale**（见上面的失败经济学段）：这个旋钮
+  #   现在同时缩放 collision 与 timeout 的基项，**不再**能改变两者的相对便宜程度——
+  #   排序由 collision_surcharge + timeout_min_penalty 保证（margin ≥ 50，与 floor 无关）；
+  #   floor 只影响"失败有多贵"的绝对量级。
+  # 实测（真 RewardCalculator，collision 的 −100×s 部分、不含附加罚与补偿）：
+  #   floor=0.2（默认）→ stage0 -20.0 / stage1 -33.33 / stage2 -66.67 / stage3+ -100.0
+  #   floor=0.5        → stage0 -50.0 / stage1 -50.00 / stage2 -66.67 / stage3+ -100.0
+  #   ⇒ floor ≤ 0.6667 时 stage≥3 **完全不受影响**（clip 上界 1.0 恒定），
+  #     即主要收敛阶段的标定不会被这个旋钮动到。
+  # 约束：0 < stage_scale_floor ≤ 1，非法值在**配置加载期**被 training/config.py 拒掉
+  #       （tests/test_stage_scale_floor.py 锁住三方一致 + 校验 + 默认行为不变）。
+  stage_scale_floor: 0.2
+
+  collision_penalty: -100.0     # 碰撞惩罚（终端值还要再减 collision_surcharge）
+  # ── 撞墙的附加罚（2026-10-23 失败经济学；**不随 stage_scale 缩放**）────────
+  # 为什么要一个"不缩放"的项：collision 与 timeout 都乘 stage_scale 之后，ac=0 时
+  # 两者相等（−100s vs −100s）⇒ margin 会退化成 0；多加一项常数罚才有严格不等。
+  #   collision_terminal = collision_penalty × stage_scale − collision_surcharge
+  #   timeout_terminal   = min(−timeout_min_penalty, timeout_penalty·s·(1 − ac))
+  #   margin = 100·s + surcharge + min(−P, −100·s·(1−ac))
+  #          ≥ min(S, 100·floor + S − P) = min(60, 50) = 50
+  # 实测（真 RewardCalculator 的 done 分支，stage 0–5 × ac 0…1 全扫）：
+  #   surcharge=60 + timeout_min_penalty=30 ⇒ margin ∈ [50.0, 130.0]（最小 stage0/ac=0，
+  #   最大 stage≥3/ac≥0.9），全表 collision 严格更贵；
+  #   surcharge=0（只留 timeout 下限）⇒ **stage0 的 margin 变 −10**（撞墙又比超时便宜：
+  #     −20 vs −30），这就是这个常数罚不能省掉的证据。
+  # 60 这个量级的理由：reward_scale=0.15 后 ≈ 9 分的确定性差，远大于 1 步稠密噪声
+  # （单步 −0.8 量级）；同时"悬停到超时"的最坏净回报 = −30 − C(=60) = −90 < 0。
+  # 而不大到压过 goal_bonus(400) 的"做完 vs 撞墙"主导项（−160 vs +400）。
+  # 0 = 关掉附加罚（A/B 回滚）；< 0 在配置加载期与 RewardCalculator 构造期都被拒。
+  # 三向一致：本键 / RewardConfig.collision_surcharge / RewardCalculator 签名默认。
+  collision_surcharge: 60.0     # 撞墙附加罚 (2026-10-23 新增，默认 60.0)
+  # 到达目标奖励 — 2026-10-05 标定 200 → 400。
+  # 实测（同一批真 stage4/5 地图 + oracle、轨迹逐位一致的对照）：
+  #   改前 goal=200：成功回合均值 +79.2(stage4) / +111.6(stage5)
+  #   改后 goal=400：成功回合均值 +311.4 / +343.4
+  #   失败回合（含 failure_dense_cap 补偿）两侧都钉在 ≈ -152 / -155
+  #   ⚠ 2026-10-23 起 failure_dense_refund_cap=120，超过 C+120 的**长**失败不再
+  #     钉在 −152/−155（退款被截断，长度依赖部分回归）；短失败仍适用。
+  #   ⇒ "做完 − 撞墙" 的差从 +231/+267 抬到 +463/+498。
+  # 400 的量级论证：它必须大于"一次成功回合的全部稠密罚分"（250 步 × ~-0.75/步
+  # ≈ -190）加上失败侧上限（-160）才有明显净优势。reward_scale=0.15 后
+  # 终点项 = 400×0.15 = 60（target_q 上限 150 仍有 2.4× 余量，见 policy/networks.py）。
+  goal_bonus: 400.0             # 到达目标奖励 (2026-10-05: 200 → 400)
+  goal_heading_scale: 10.0     # 到达目标时朝向奖励倍数
+  stuck_penalty: 0             # 卡住惩罚 (0=禁用 stuck 检测)
+  timeout_penalty: -100.0       # 超时惩罚（终端值 = min(−timeout_min_penalty, 本值×s×(1−ac))）
+  # ── 超时基项的**下限**（2026-10-23 失败经济学第二轮；必须 > 0）────────────
+  # 只把 timeout 也乘 stage_scale 时，低阶段基项会掉到 −20·(1−ac)：
+  #   stage0 悬停 500 步超时 → 基项 ≈ −20，叠上 failure_dense_refund_cap=120 的退款，
+  #   实测净回报 **+1.7**（失败回合为正 = 本项目历史上每次都是 bug）。
+  # 下限把基项钉在 ≤ −P（默认 −30）⇒ 悬停到超时最坏 −30 − C(60) = −90。
+  # 与 collision_surcharge 的分工：S 保证**排序**（撞墙更贵），P 保证**绝对值为负**。
+  # 0 或负值在配置加载期与 RewardCalculator 构造期都被拒（0 = 关掉下限）。
+  # 三向一致：本键 / RewardConfig.timeout_min_penalty / RewardCalculator 签名默认。
+  timeout_min_penalty: 30.0     # 超时基项下限 (2026-10-23 新增，默认 30.0)
+  path_deviation_penalty: -100.0 # 路径偏离截断惩罚

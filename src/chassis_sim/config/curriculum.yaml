@@ -1,0 +1,248 @@
+# 课程学习阶段配置 — Hybrid-A* 全局路径生成
+# 使用 active_stage (0-indexed) 切换当前阶段
+# 每个 stage 继承 defaults，只写差异项
+
+active_stage: 0
+
+defaults:
+  hybrid_astar:
+    point_spacing: 0.05       # 路径点间距（米），长路径点多、短路径点少
+    turning_radius: 0.25
+    reverse_cost_multiplier: 1.5
+    start_theta_range: [-0.5, 0.5]
+    goal_theta_range: [-0.5, 0.5]
+    via_points: {enabled: false}
+    reverse_probability: 0.0         # 默认不反向起步朝向（stage 4+ 可覆盖）
+    path_reverse_probability: 0.0    # 默认不翻转路径（stage 4+ 可覆盖）
+    min_start_goal_dist: 3.0         # 起点与终点最小欧几里得距离（米）
+    boundary_margin: 1.5           # 起终点距世界边界的最小距离（米），自动 clamp region
+    obstacle_spacing: 0.60
+
+    # ── 参考路径横向抖动（2026-10-23，默认 0.0 = 完全关闭）─────────────────
+    # 机制：MapGenerator.generate() 在最终路径确定之后、返回之前，沿每个路径点的
+    # 路径法向（相邻点中心差分切线旋转 90 度）叠加 N(0, sigma) 样本。目的是模拟
+    # 定位误差 / 地图过期 / 规划精度不足，让参考路径可能贴得比车体还近 —— 制造
+    # "盲跟路径会撞、必须主动偏离"的实验条件（判断学习控制何时值得用）。
+    # 保持的性质（tests/test_path_perturbation.py 锁住）：首末点不动（起终点位姿
+    # 与 env 的 reset/goal 判定一致）、theta 列不改（方向语义由 env 独立判定）、
+    # 抖动后的点仍在世界边界内、只由 generate(rng) 的 rng 驱动（同 seed 可复现）。
+    # 足迹复验 _check_path_footprint 仍然只看规划器输出（抖动在它之后）。
+    # 0.0 = 关闭 ⇒ 与加入本键之前逐位相同，且不消耗 rng。
+    # 三向一致：本键 / MapGenerator._path_cfg 读取（path_perturb_sigma 属性）/
+    # 装配期校验 >= 0（非法值抛 ValueError 而不是静默生成怪路径）。
+    path_perturb_sigma: 0.0
+    # 抖动方式（2026-10-23 追加，同一机制的两个采样口径）：
+    #   point   = 每个路径点独立抽 N(0, sigma)（默认，首版行为）。在 0.05 m 点距上
+    #             等价于"每 5 cm 换一次方向"：sigma=0.2/0.3 实测平均点距 0.24/0.35 m、
+    #             单步最大位移 1.0/1.5 m、每图 6~18 个自交 ⇒ 参考路径变成锯齿折线。
+    #   control = 每隔 path_perturb_control_spacing 米取一个控制点抽 N(0, sigma)，再沿
+    #             弧长线性插值到每个点 ⇒ 噪声的空间相关长度被钉成 0.5 m，路径仍是
+    #             一条合理曲线，同时贴障程度基本保留。首末控制点强制为 0（首末点不动）。
+    # 两种方式都保持同样三条硬约束（首末点不动 / theta 列不改 / 点在世界边界内）
+    # 且都只由 generate(rng) 的 rng 驱动；sigma=0 时两种方式都逐位不变且不抽样本。
+    path_perturb_mode: "point"
+    # control 模式的控制点弧长间距（米），须 > 0。越小越平滑噪声相关长度越短（越像
+    # point 模式）；路径总长 < 本值时只有两个控制点 ⇒ 插值恒 0 = 根本不抖。
+    path_perturb_control_spacing: 0.5
+
+    # ── 折返（cusp）合法性过滤（2026-10-28，两条判据独立开关，0 = 关闭）──────────
+    # 机制：MapGenerator.generate() 在 _check_path_footprint 通过之后、_compute_goal_heading
+    # 之前调用 _cusp_violation(path)；不合规 ⇒ 丢弃这张图（含障碍）重新采样，与
+    # "路径撞墙"同一条重试链（max_generate_retries），用尽则抛 MapGenerationError
+    # （env 侧再兜 8 次 MAP_GEN_RETRIES，最后退化成空地直线 + warning）。
+    # 为此丢弃的次数由 MapGenerator.cusp_rejections 计数（不逐次 warn：实测拒绝率
+    # ~10%，训练时 16 env × 每回合 reset 会把 stderr 刷满）。
+    #
+    # 「倒车腿」= 连续反向段，判据与运行时 envs/ackermann_env.py 的 segment_is_reverse
+    # 同源（段运动方向 vs 该段起点鼻向夹角 > π/2）。倒车段与 cusp 从 stage 0 就有：
+    # 每个 stage 的 reverse_primitives 都是 true（整条路径反向翻转只在 stage 4/5 由
+    # path_reverse_probability 触发，但 planner 在正向无解时会自己用 backward 原语）。
+    #
+    # 判据 1 · 短折返：某个极大倒车段的弧长 < min_cusp_fold_arc（米）。
+    #   为什么：「倒 0.5 m 再往前开」在参考路径上只占几个点，却让 path_dir /
+    #   heading_error / 档位闸门在几步内翻两次；车长 0.38 m，这种折返在几何上
+    #   没有意义。它与"从哪一点开始算两条腿"无关（纯段分类 + 弧长），最稳健。
+    # 判据 2 · 窄发卡：倒车腿与前进腿最近距离 < min_cusp_leg_separation（米）。
+    #   为什么：两腿间距接近车身（半宽 0.10 m + planner robot_inflation 0.16 m）时，
+    #   车在一条腿上做横向修正就贴到另一条腿的参考线；而 PathExtractor 后的
+    #   ±25 点（≈±1.25 m）最近点窗口在那一段同时含两条腿。
+    #   量法按段中点算，且只比较弧长间隔 >= cusp_min_arc_gap 的段对 —— 折返顶点
+    #   附近两腿按构造相交，把那里的 0 距离算进来这个量就失去意义。实测这个量随
+    #   min_arc_gap 变化很大（stage1 80 图：gap=0.4/0.5/1.0/1.5 m ⇒ median
+    #   0.45/0.31/0.64/1.70 m）⇒ 它是"尾部判定"，不是难度旋钮，改它之前先重测。
+    #
+    # 实测（2026-10-28，真 planner，每 stage 60 条候选路径，过滤关闭时统计"开启后
+    # 会丢哪些"）：含倒车段 55.8%；倒车段弧长 < 0.8 m 的占 33%（分 stage
+    # 50/42/44/57/66/74%）；两腿间距 < 0.35 m 的占 14%（40/21/10/16/29/26%）；
+    # 两者任一 41%。开启后产出的路径违规 0/60（判据是硬的），reset 墙钟
+    # stage5 p50 480→569 ms、stage4 254→370 ms（+13~46%）。
+    # ⚠️ 短折返的来源是规划器原语：_BACKWARD_PRIMITIVES 三条都是 0.5 m 弧长
+    # （直 / κ=±4）⇒ 判据 1 实际等价于"这条路径里不许有单原语的 0.5 m 倒车"。
+    # 位置分布：最短折返段在中途 67/119、起步 35、末段 17。
+    # ⚠️ 代价（2026-10-28 用户裁决 A：接受）：stage3-5 的候选图分别被丢 57/66/74%
+    # ⇒ 留下的基本是"规划器能纯前进解出来"的地图，实际难度比 stage 名字轻；
+    # 10 次内部重试用尽的概率实测 5~10%（stage4/5），由 env 侧的 8 次
+    # MAP_GEN_RETRIES 兜住（有效退化概率 ≈0，见 envs/ackermann_env.py 的 reset）。
+    # 代码默认 0.0/0.0/1.0（全关 = 与加入本键之前逐位相同），本文件显式开启。
+    # 三向一致：本文件 / MapGenerator._path_cfg 读取（同名 property）/
+    # 装配期校验 >= 0（非法值抛 ValueError 而不是静默生成怪路径）。
+    min_cusp_fold_arc: 0.8
+    min_cusp_leg_separation: 0.35
+    cusp_min_arc_gap: 1.0
+
+stages:
+  # ══════════════════════════════════════════════════════════════════════════
+  # 2026-10-04 重构：删除空地图阶段（原 stage 0 empty_straight / 1 empty_curved）
+  # 理由（run021 实证）：
+  #   1. 空地图上碰撞分支永远不可达 → critic 学不到碰撞价值，
+  #      Q 景观奖励"无视 LiDAR、全速直行"，正是障碍任务的反面先验；
+  #   2. 从空地图切到 count[10,20] 障碍是 0→15 的断崖，不是 ramp，
+  #      分布漂移 + primacy bias 导致策略不可恢复地退化；
+  #   3. 用户要求：直接从有障碍地图开始训练。
+  # 新思路：**从"稀疏障碍"起步，用密度 ramp 替代"有/无障碍 ramp"**。
+  #   每个阶段都是障碍地图，只是障碍密度/间距不同；专家在这些地图上
+  #   的到达率决定了自举（几何预热 + BC）是否可用。
+  # 实测几何专家（PurePursuit）到达率 vs 障碍数（修复路径几何之前）：
+  #   1-2 个 80% | 2-4 个 62% | 4-6 个 52% | 5-8 个 47% | 10-20 个 22-30%
+  # ══════════════════════════════════════════════════════════════════════════
+
+  # Stage 0: 稀疏障碍 — 从障碍地图起步（无空地图），专家可自举
+  - name: "obstacles_sparse"
+    obstacles:
+      enabled: true
+      count: [2, 5]
+      shapes: ["circle", "rectangle"]
+      circle: { radius: [0.2, 0.5] }
+      rectangle: { length: [0.5, 1.5], width: [0.2, 0.6] }
+      position_margin: 1.2
+      obstacle_spacing: 1.0
+    hybrid_astar:
+      reverse_primitives: true
+      max_iterations: 3000
+      start_region: [1, 3, 1, 3]
+      goal_region: [7, 9, 7, 9]
+      start_theta_range: [-0.5, 0.5]
+      goal_theta_range: [-0.5, 0.5]
+      start_goal_clearance: 1.0
+      via_points: {enabled: false}
+      path_perturb_sigma: 0.0
+      path_perturb_mode: "point"
+      path_perturb_control_spacing: 0.5
+
+  # Stage 1: 中等障碍 — 密度上升，仍以直行为主
+  - name: "obstacles_medium"
+    obstacles:
+      enabled: true
+      count: [5, 9]
+      shapes: ["circle", "rectangle"]
+      circle: { radius: [0.2, 0.5] }
+      rectangle: { length: [0.5, 1.5], width: [0.2, 0.6] }
+      position_margin: 1.1
+      obstacle_spacing: 0.8
+    hybrid_astar:
+      reverse_primitives: true
+      max_iterations: 3000
+      start_region: [1, 3, 1, 3]
+      goal_region: [7, 9, 7, 9]
+      start_theta_range: [-0.8, 0.8]
+      goal_theta_range: [-1.0, 1.0]
+      start_goal_clearance: 0.85
+      via_points: {enabled: false}
+      path_perturb_sigma: 0.0
+      path_perturb_mode: "point"
+      path_perturb_control_spacing: 0.5
+
+  # Stage 2: 密集障碍 — 原 stage 2 的密度，作为主要收敛目标
+  - name: "obstacles_dense"
+    obstacles:
+      enabled: true
+      count: [9, 15]
+      shapes: ["circle", "rectangle"]
+      circle: { radius: [0.2, 0.5] }
+      rectangle: { length: [0.5, 1.5], width: [0.2, 0.6] }
+      position_margin: 1.0
+      obstacle_spacing: 0.65
+    hybrid_astar:
+      reverse_primitives: true
+      max_iterations: 4000
+      start_region: [1, 3, 1, 3]
+      goal_region: [7, 9, 7, 9]
+      start_theta_range: [-1.0, 1.0]
+      goal_theta_range: [-1.5, 1.5]
+      start_goal_clearance: 0.7
+      via_points: {enabled: false}
+      path_perturb_sigma: 0.0
+      path_perturb_mode: "point"
+      path_perturb_control_spacing: 0.5
+
+  # Stage 3: 密集障碍 + 倒车路段（原 stage 3 密度下调后）
+  - name: "obstacles_dense_reverse"
+    obstacles:
+      enabled: true
+      count: [8, 14]
+      shapes: ["circle", "rectangle"]
+      circle: { radius: [0.2, 0.5] }
+      rectangle: { length: [0.3, 1.2], width: [0.2, 0.5] }
+      position_margin: 1.0
+      obstacle_spacing: 0.65
+    hybrid_astar:
+      reverse_primitives: true
+      max_iterations: 4000
+      start_region: [0.5, 3, 0.5, 3]
+      goal_region: [7, 9.5, 7, 9.5]
+      start_theta_range: [-1.0, 1.0]
+      goal_theta_range: [-1.0, 1.0]
+      start_goal_clearance: 0.7
+      reverse_probability: 0.4           # 40% 起步倒车
+      path_reverse_probability: 0.2      # 20% 翻转整条路径
+      path_perturb_sigma: 0.0
+      path_perturb_mode: "point"
+      path_perturb_control_spacing: 0.5
+
+  # Stage 4: 倒车/折返
+  # 【2026-10-30 密度 ramp】count 12-20 → 10-16、circle 半径上限 0.6 → 0.5、spacing 0.6 → 0.62。
+  # 依据：run113 / run114 两次都在本阶段自锁（foldback eval 均值 0.496 / 0.428；run114 的 31 次
+  # eval 里 0 次达到 threshold_advance 0.65、最高 0.575），而 stage3 dense_reverse（count 8-14 +
+  # 倒车 0.4/0.2）两次都在 0.61-0.64 ⇒ 断崖来自"数量 +45% + 半径上限 +0.1 + 间距 -0.05"三连跳，
+  # 不是倒车本身（倒车概率 0.3/0.3 保持不动，只把密度抬到 stage3 与旧 stage4 之间）。stage5 未动。
+  - name: "foldback_reverse"
+    obstacles:
+      enabled: true
+      count: [10, 16]
+      shapes: ["circle", "rectangle"]
+      circle: { radius: [0.2, 0.5] }
+      rectangle: { length: [0.5, 1.5], width: [0.2, 0.5] }
+      position_margin: 1.0
+      obstacle_spacing: 0.62
+    hybrid_astar:
+      turning_radius: 0.25
+      reverse_primitives: true
+      max_iterations: 4000
+      start_theta_range: [-1.0, 1.0]
+      start_region: [0.5, 2.5, 0.5, 2.5]
+      goal_region: [7.5, 9.5, 7.5, 9.5]
+      start_goal_clearance: 0.7
+      reverse_probability: 0.3
+      path_reverse_probability: 0.3
+      path_perturb_sigma: 0.0
+      path_perturb_mode: "point"
+      path_perturb_control_spacing: 0.5
+
+  # Stage 5: 网格迷宫 — 死胡同倒车
+  - name: "maze_grid"
+    obstacles:
+      enabled: true
+      generation: "grid"
+      grid_size: 1.0
+      fill_ratio: [0.4, 0.7]
+      dead_end_ratio: [0.1, 0.3]
+      position_margin: 1.0
+    hybrid_astar:
+      reverse_primitives: true
+      max_iterations: 5000
+      start_region: [1, 3, 1, 3]
+      goal_region: [7, 9, 7, 9]
+      start_goal_clearance: 1.0
+      path_perturb_sigma: 0.0
+      path_perturb_mode: "point"
+      path_perturb_control_spacing: 0.5

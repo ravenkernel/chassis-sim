@@ -1,0 +1,28 @@
+# core 场景 3/4：窄道（不需要 numba）。
+# 净宽 0.6 m = 上/下两条长矩形之间 y ∈ [4.70, 5.30]；车体宽 0.20 m（半宽 0.10）
+# ⇒ 两侧各留 0.20 m 余量。矩形沿 x 覆盖 [0.5, 6.5]，路径从 x=1 到 x=8，
+# 因此车在前 5.5 m 处于通道内、最后 1.5 m 已出通道（便于观察"出口"行为）。
+name: corridor
+description: 窄道 — 两侧长矩形夹出 0.6 m 净宽（x∈[0.5,6.5]，y∈[4.7,5.3]）
+world_bounds: [0.0, 10.0, 0.0, 10.0]
+obstacles:
+  - type: rectangle
+    x: 3.500
+    y: 4.600
+    length: 6.000
+    width: 0.200
+    theta: 0.000
+  - type: rectangle
+    x: 3.500
+    y: 5.400
+    length: 6.000
+    width: 0.200
+    theta: 0.000
+path:
+  type: straight
+  params:
+    start: [1.000, 5.000]
+    goal: [8.000, 5.000]
+    spacing: 0.05
+seed: 0
+requires: null

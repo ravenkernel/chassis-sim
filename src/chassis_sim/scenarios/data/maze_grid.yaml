@@ -1,0 +1,22 @@
+# planning 场景（stage 5，requires: planning）：maze_grid
+# 网格迷宫 + 死胡同倒车（stage 5）：generation grid、grid_size 1.0、
+# fill_ratio [0.4,0.7]、dead_end_ratio [0.1,0.3]、max_iterations 5000
+#
+# 地图本体不落进 YAML：obstacles 故意留空、path.type=stage 只声明"取哪个 stage"，
+# 真正的障碍与参考路径由 chassis_sim.planning.MapGenerator 现场生成（依赖 numba，属
+# [planning] extra）。world_bounds 作为生成区域传给 MapGenerator。
+# seed: 1 而非 0 —— seed 0 在本 stage 上必然失败（不是偶发）：
+#   MapGenerationError: Failed to generate solvable map after 10 retries
+#   （末次因折返不合规被拒：短折返 倒车段弧长 0.60 m < min_cusp_fold_arc 0.80 m）
+# 网格迷宫对折返段的分布不友好，10 次重试全被 cusp 过滤器拦下；
+# seed 1 实测一次通过（24 个障碍 / 177 个路径点）。
+name: maze_grid
+description: 网格迷宫 + 死胡同倒车（课程 stage 5）—— 由 MapGenerator 现场生成
+world_bounds: [0.0, 10.0, 0.0, 10.0]
+obstacles: []
+path:
+  type: stage
+  params:
+    stage: maze_grid
+seed: 1
+requires: planning

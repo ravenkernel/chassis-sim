@@ -1,0 +1,27 @@
+# core 场景 5/5：动态横穿（不需要 numba）。
+# 唯一带 dynamic_obstacles 的场景。路径与 straight.yaml 同一条（x 1 m → 5 m、y = 5 m），
+# 障碍以 0.3 m/s 沿 +y 匀速横穿这条直线：t=0 时圆心 (3.0, 4.4)，t=2 s 恰好压到 y = 5.0，
+# 而车（AckermannChassis 默认 v_max=1.0 m/s）在同一时刻到达 x = 3.0 ⇒ 碰撞就发生在 ~2 s
+# 的同一条时间轴上；走 ChassisSimEnv（EnvConfig v_max=1.2）时相遇提前到 ~1.5 s（第 13 步）。
+# period 20 s + pingpong：0→10 s 上行 3 m（y 4.4→7.4），10→20 s 原路折返，
+# 因此每个周期两次越过 y = 5（t = 2 s 上行、t = 18 s 下行）。
+# 运动纯解析、零随机：位置只由本文件字段与模拟时间决定。
+name: dynamic_crossing
+description: 动态横穿 — 半径 0.25 m 的圆以 0.3 m/s 垂直横穿直线路径（周期 20 s 折返）
+world_bounds: [0.0, 10.0, 0.0, 10.0]
+obstacles: []
+path:
+  type: straight
+  params:
+    start: [1.000, 5.000]
+    goal: [5.000, 5.000]
+    spacing: 0.05
+dynamic_obstacles:
+  - type: linear
+    start: [3.000, 4.400]
+    velocity: [0.000, 0.300]
+    radius: 0.250
+    period: 20.000
+    pingpong: true
+seed: 0
+requires: null

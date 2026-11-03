@@ -1,0 +1,60 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chassis-sim"
+version = "0.1.0"
+description = "Gymnasium environments for Ackermann, differential-drive and mecanum chassis"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "zhao6663", email = "30620187+zhao6663@users.noreply.github.com" }]
+license = "MIT"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+keywords = [
+    "reinforcement-learning",
+    "robotics",
+    "simulation",
+    "gymnasium",
+    "ackermann",
+    "differential-drive",
+    "mecanum",
+]
+dependencies = [
+    "numpy>=1.24",
+    "gymnasium>=0.29",
+    "pyyaml>=6.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/zhao6663/chassis-sim"
+Repository = "https://github.com/zhao6663/chassis-sim"
+Issues = "https://github.com/zhao6663/chassis-sim/issues"
+Changelog = "https://github.com/zhao6663/chassis-sim/releases"
+
+[project.optional-dependencies]
+planning = ["numba>=0.56"]
+viz = ["matplotlib>=3.7", "rich>=13.0"]
+dev = ["pytest>=7.0", "ruff>=0.4"]
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+chassis_sim = ["py.typed", "config/*.yaml", "scenarios/data/*.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

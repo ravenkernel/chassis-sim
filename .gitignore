@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+build/
+dist/
+.eggs/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+.coverage
+htmlcov/
+
+# 本项目产物
+runs/
+checkpoints/
+*.pt
+*.pth
+
+# 编辑器 / 系统
+.idea/
+.vscode/
+.DS_Store

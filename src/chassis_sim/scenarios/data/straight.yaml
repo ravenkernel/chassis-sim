@@ -1,0 +1,15 @@
+# core 场景 1/4：无障碍直线（不需要 numba）。
+# 路径 1 m → 5 m、y 恒为 5，与 env 内建 _straight_scene 同向（那里是 1→9），
+# 只是更短 —— 用作"最干净的跟踪基线"。
+name: straight
+description: 无障碍直线，x 从 1 m 到 5 m（y = 5 m，车头朝 +x）
+world_bounds: [0.0, 10.0, 0.0, 10.0]
+obstacles: []
+path:
+  type: straight
+  params:
+    start: [1.000, 5.000]
+    goal: [5.000, 5.000]
+    spacing: 0.05
+seed: 0
+requires: null
