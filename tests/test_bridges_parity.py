@@ -29,6 +29,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import sys
 from pathlib import Path
@@ -133,6 +134,46 @@ def _scenarios() -> list:
 
 def _s(value) -> str:
     return repr(float(value))
+
+
+# 位级断言只在本机录制环境（numpy 1.26 + 本机 libm/CPU）内保证。
+# 跨 CPU / numpy 的 arctan、tan 可能差 1~2 ulp —— 实测 GitHub runner 上
+# 同一个动作的 δ 是 0.2448991490545638，录制时是 0.24489914905456378
+# （差 2e-17，相对 8e-17）。这不是移植错了，所以默认按容差比，位级只在
+# CHASSIS_STRICT_GOLDEN=1 时要求。
+_STRICT_GOLDEN = os.environ.get("CHASSIS_STRICT_GOLDEN") == "1"
+
+
+def _assert_float_matches(got: float, expected: str, ctx: str) -> None:
+    """默认容差（rel 1e-12 / abs 1e-15）；严格档要求 repr 位级相同。"""
+    if _STRICT_GOLDEN:
+        got_s = _s(got)
+        assert got_s == expected, (
+            f"{ctx}: 位级不一致 got={got_s} want={expected}"
+            "（CHASSIS_STRICT_GOLDEN=1 的位级断言只在本机录制环境内保证，"
+            "跨 numpy / CPU 不保证）"
+        )
+        return
+    want = float(expected)
+    assert math.isclose(got, want, rel_tol=1e-12, abs_tol=1e-15), (
+        f"{ctx}: got={got!r} want={want!r}（rel_tol=1e-12, abs_tol=1e-15）"
+    )
+
+
+def _assert_array_matches(got: np.ndarray, exp: np.ndarray, ctx: str) -> None:
+    """float32 数组同理：严格档逐元素位级相等，默认档按 float32 精度容差。"""
+    n_diff = int(np.count_nonzero(got != exp))
+    if _STRICT_GOLDEN:
+        print(f"[对拍] {ctx}: dtype={got.dtype} 逐元素不等个数={n_diff}")
+        assert n_diff == 0, f"{ctx} 有 {n_diff} 个元素不等（严格档）"
+        return
+    max_diff = float(np.max(np.abs(got.astype(np.float64) - exp.astype(np.float64))))
+    print(
+        f"[对拍] {ctx}: dtype={got.dtype} 逐元素不等个数={n_diff} max|Δ|={max_diff:.3e}"
+    )
+    assert np.allclose(got, exp, rtol=1e-6, atol=1e-6), (
+        f"{ctx} 超出 float32 容差：max|Δ|={max_diff:.3e}（rtol=1e-6, atol=1e-6）"
+    )
 
 
 def _floats(rows) -> np.ndarray:
@@ -321,8 +362,8 @@ def test_golden_mapping_consistency(golden: dict) -> None:
     for rec in golden["scenarios"]:
         for action, expected in zip(rec["actions"], rec["mapped_delta_v"]):
             delta, v = chassis._map_action(np.array([float(x) for x in action]))
-            assert _s(delta) == expected[0], rec["name"]
-            assert _s(v) == expected[1], rec["name"]
+            _assert_float_matches(delta, expected[0], f"{rec['name']}.delta")
+            _assert_float_matches(v, expected[1], f"{rec['name']}.v")
 
 
 def test_pose_parity(golden: dict, replay: list) -> None:
@@ -344,9 +385,7 @@ def test_lidar_parity(golden: dict, replay: list) -> None:
             got_arr = got[key]
             assert got_arr.dtype == np.float32, key
             assert got_arr.shape == exp.shape, (key, got_arr.shape, exp.shape)
-            n_diff = int(np.count_nonzero(got_arr != exp))
-            print(f"[对拍] {rec['name']}.{key}: dtype=float32 逐元素不等个数={n_diff}")
-            assert n_diff == 0, f"{rec['name']}.{key} 有 {n_diff} 个元素不等"
+            _assert_array_matches(got_arr, exp, f"{rec['name']}.{key}")
 
 
 def test_odometry_parity(golden: dict, replay: list) -> None:
@@ -356,9 +395,7 @@ def test_odometry_parity(golden: dict, replay: list) -> None:
         ).astype(np.float32)
         got_arr = got["odometry"]
         assert got_arr.dtype == np.float32
-        n_diff = int(np.count_nonzero(got_arr != exp))
-        print(f"[对拍] {rec['name']}.odometry: dtype=float32 逐元素不等个数={n_diff}")
-        assert n_diff == 0, f"{rec['name']}.odometry 有 {n_diff} 个元素不等"
+        _assert_array_matches(got_arr, exp, f"{rec['name']}.odometry")
 
 
 def test_boolean_parity(golden: dict, replay: list) -> None:
@@ -375,7 +412,9 @@ def test_boolean_parity(golden: dict, replay: list) -> None:
 
 def test_goal_heading_parity(golden: dict, replay: list) -> None:
     for rec, got in zip(golden["scenarios"], replay):
-        assert got["goal_heading"] == float(rec["goal_heading"]), rec["name"]
+        _assert_float_matches(
+            got["goal_heading"], _s(rec["goal_heading"]), f"{rec['name']}.goal_heading"
+        )
 
 
 def test_reverse_control_detects_lag(golden: dict) -> None:

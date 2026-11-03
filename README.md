@@ -9,7 +9,7 @@ steering, differential drive, and mecanum — with normalized actions, a pure-Nu
 simulator, optional parameterized sensors, and reference controllers for reproducible
 evaluation.
 
-Version 0.1.1. Python 3.10+.
+Version 0.1.2. Python 3.10+.
 
 ## At a glance
 
