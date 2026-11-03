@@ -1,6 +1,7 @@
 """纯 numpy 的传感器桥（`SensorProvider` 实现）。
 
-对外暴露：抽象接口 `SensorProvider`、实现 `SimpleBridge`，以及扫描通路的两个
+对外暴露：抽象接口 `SensorProvider`、实现 `SimpleBridge`、把归一化动作接到吃
+物理命令的外部模拟器上的适配器 `PhysicalCommandBridge`，以及扫描通路的两个
 入口 `get_scan` / `scan_to_pointcloud`（后者原本就在 base.py 的模块层）。
 `raycast` 里的两个下划线函数是实现细节，不在此转发（避免把私有符号变成公共 API）。
 
@@ -14,6 +15,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .adapters import PhysicalCommandBridge
 from .base import SensorProvider, scan_to_pointcloud
 from .simple_bridge import SimpleBridge
 
@@ -24,6 +26,7 @@ def get_scan(bridge: SensorProvider, side: str = "front") -> dict[str, Any]:
 
 
 __all__ = [
+    "PhysicalCommandBridge",
     "SensorProvider",
     "SimpleBridge",
     "get_scan",

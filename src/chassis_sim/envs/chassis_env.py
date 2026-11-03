@@ -890,13 +890,22 @@ class ChassisSimEnv(gym.Env):
         return np.clip(act, self.action_space.low, self.action_space.high)
 
     def _physical_action(self, act: np.ndarray) -> np.ndarray:
-        """本步物理动作向量 [转向标度, v, (vy)]：_prev_action / 奖励 / info 的口径。"""
+        """本步物理动作向量 [转向标度, v, (vy)]：_prev_action / 奖励 / info 的口径。
+
+        ⚠ 这是 **env 内部口径**，不是对外物理向量：差速/麦轮的转向维是
+        `_steer_from()` 给出的"转向标度"（ω 归一化到 ±delta_max），obs 的 act 段、
+        `_prev_action[0]` 的限幅（:922/:1282）都按它；对外的物理向量是
+        `Chassis.physical_action()`（差速 `[v, omega]`、麦轮 `[v, vy, omega]`），
+        两者在差速/麦轮上不同，不可互换。阿克曼两者一致（转向维都是物理 δ）。
+        """
         cmd = self.chassis.command(act)
         out = np.empty(self.action_dim, dtype=act.dtype)
         if self.chassis_name == "ackermann":
-            # 底盘 step() 把当步物理转角存进 _prev_delta（ackermann.py:92），
-            # 与主仓 mapped_action[0] 逐位一致，v=0 时 δ 仍是指令值。
-            out[0] = float(self.chassis._prev_delta)
+            # 走底盘的公开契约，不再读私有 self.chassis._prev_delta：外部桥只调
+            # command()、从不推进底盘状态，_prev_delta 会恒为 0（mapped_action[0]
+            # 恒 0 的真缺陷）。physical_action() 直接取本帧 _map_action 的 δ，
+            # v=0 时 δ 仍是指令值，且与 SimpleBridge 路径逐位同值。
+            out[0] = float(self.chassis.physical_action(act)[0])
         else:
             out[0] = self._steer_from(cmd.v, cmd.omega)
         out[1] = cmd.v
@@ -1296,7 +1305,7 @@ class ChassisSimEnv(gym.Env):
         raw = self._get_raw_obs()
         prev_delta = self._prev_action[0]
         prev_v = self._prev_action[1]
-        # 物理动作向量 [转向标度, v, (vy)]：底盘 step() 已记录当步物理转角
+        # 物理动作向量 [转向标度, v, (vy)]：阿克曼转向维由底盘 physical_action() 给出
         mapped_action = self._physical_action(act)
         self._prev_action = mapped_action.copy()
 

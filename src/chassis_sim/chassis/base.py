@@ -50,6 +50,26 @@ class Chassis(ABC):
     def command(self, action: np.ndarray) -> ChassisCommand:
         """原始动作 -> ChassisCommand。入参越界先 clip，形状不符抛 ValueError。"""
 
+    def physical_action(self, action: np.ndarray) -> np.ndarray:
+        """归一化 action -> 交给**外部物理模拟器**的物理向量（本车型自己的顺序）。
+
+        ackermann  : [delta(rad), v(m/s)]
+        diff_drive : [v(m/s), omega(rad/s)]
+        mecanum    : [v(m/s), vy(m/s), omega(rad/s)]
+
+        具体方法（不是 abstractmethod）：第三方子类不必实现它。默认实现基于
+        `command()`（纯映射，不读也不写执行器状态）：v 恒在最前；麦轮（action_dim
+        >= 3）的顺序是 v, vy, omega（不是 ChassisCommand 的字段声明顺序）。
+        阿克曼覆盖它 —— 它的 delta 不在 ChassisCommand 里，只能由车型自己的
+        `_map_action()` 直接给出（反解只对 |v| >= V_EPS 有定义）。
+        """
+        cmd = self.command(action)
+        if self.action_dim >= 3:
+            return np.array(
+                [float(cmd.v), float(cmd.vy), float(cmd.omega)], dtype=np.float64
+            )
+        return np.array([float(cmd.v), float(cmd.omega)], dtype=np.float64)
+
     def step(self, action: np.ndarray) -> ChassisCommand:
         """推进执行器状态一步，返回**本积分步生效**的命令。默认无滞后。"""
         return self.command(action)

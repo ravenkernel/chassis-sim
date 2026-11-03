@@ -9,7 +9,7 @@ steering, differential drive, and mecanum — with normalized actions, a pure-Nu
 simulator, optional parameterized sensors, and reference controllers for reproducible
 evaluation.
 
-Version 0.1.2. Python 3.10+.
+Version 0.1.3. Python 3.10+.
 
 ## At a glance
 
@@ -193,6 +193,32 @@ action_dim=3 total=495
   goal_sig       [491:493]
   path_valid     [493:494]
   path_progress  [494:495]
+```
+
+### Physical-command bridges
+
+A third-party simulator (ir-sim, ROS/Gazebo, the main repo's `NumpySimBridge`) takes
+**physical** commands, not a normalized action. `PhysicalCommandBridge` maps with
+`chassis.physical_action()` (never `step()` — the backend owns its own steering lag)
+and forwards sensors untouched. The vector order is the chassis's own:
+
+| chassis | physical vector |
+| --- | --- |
+| `ackermann` | `[delta (rad), v (m/s)]` |
+| `diff_drive` | `[v (m/s), omega (rad/s)]` |
+| `mecanum` | `[v (m/s), vy (m/s), omega (rad/s)]` |
+
+The actuator lag must be applied **exactly once**, by the inner physical simulator:
+the adapter never advances the chassis state and never calls `chassis.reset_state()`.
+An inner bridge that does not model its own lag drops the pose equivalence with
+`SimpleBridge` from 1.5e-15 to 9.76e-01.
+
+```python
+from chassis_sim.bridges import PhysicalCommandBridge
+from chassis_sim.chassis import AckermannChassis
+ch = AckermannChassis()                    # the same instance the env uses
+bridge = PhysicalCommandBridge(inner, ch)  # inner speaks [delta, v] (this chassis)
+bridge.step([0.3, 0.6])                    # -> inner.step(array([delta, v]))
 ```
 
 ## Scenarios

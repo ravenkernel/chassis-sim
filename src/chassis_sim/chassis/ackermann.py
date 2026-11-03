@@ -81,6 +81,17 @@ class AckermannChassis(Chassis):
         omega = 0.0 if v == 0.0 else v / self.wheelbase * np.tan(delta)
         return ChassisCommand(v=v, omega=omega, vy=0.0)
 
+    def physical_action(self, action: np.ndarray) -> np.ndarray:
+        """归一化动作 -> 外部物理模拟器的 [delta, v]（float64）。
+
+        delta 直接取 `_map_action()` 的**本帧指令值**，不走 `arctan(omega*L/v)`
+        反解：反解只在 |v| >= V_EPS 时有定义（零速要沿用上一拍，就成了跨步状态），
+        且 200 例随机动作里 64 例差 1 ulp。`_map_action()` 在零速下照给指令 δ，
+        因此这里是纯函数：同一 action 永远得到逐位相同的向量。
+        """
+        delta, v = self._map_action(action)
+        return np.array([delta, v], dtype=np.float64)
+
     def step(self, action: np.ndarray) -> ChassisCommand:
         """推进一步执行器状态：速度立即生效，转向滞后一拍（旧桥 :379-390 的语义）。
 
