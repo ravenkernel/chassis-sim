@@ -10,10 +10,17 @@ import pytest
 
 from chassis_sim.bridges import SimpleBridge
 from chassis_sim.chassis import AckermannChassis
-from chassis_sim.render import render_to_png
 
-matplotlib = pytest.importorskip("matplotlib")
+# render 层只在函数内部 import matplotlib（缺失时抛 ImportError 而不是
+# ModuleNotFoundError），跳过必须发生在任何 chassis_sim.render 导入与调用之前。
+matplotlib = pytest.importorskip(
+    "matplotlib",
+    reason="render 测试需要 matplotlib（pip install chassis-sim[viz]）",
+)
+
 from matplotlib.image import imread
+
+from chassis_sim.render import render_to_png
 
 DPI = 100.0
 

@@ -10,6 +10,17 @@ import pytest
 
 from chassis_sim.bridges import SimpleBridge
 from chassis_sim.chassis import AckermannChassis
+
+# render 层只在函数内部 import matplotlib（缺失时抛 ImportError 而不是
+# ModuleNotFoundError），跳过必须发生在任何 chassis_sim.render 导入与调用之前。
+matplotlib = pytest.importorskip(
+    "matplotlib",
+    reason="render 测试需要 matplotlib（pip install chassis-sim[viz]）",
+)
+
+from matplotlib.colors import to_rgb
+from matplotlib.image import imread
+
 from chassis_sim.render import render_frame, render_to_png
 from chassis_sim.render.figure import (
     CAR_FACE_COLOR,
@@ -18,10 +29,6 @@ from chassis_sim.render.figure import (
     _collect_lidar_rays,
 )
 from chassis_sim.render.scene import scene_from_bridge
-
-matplotlib = pytest.importorskip("matplotlib")
-from matplotlib.colors import to_rgb
-from matplotlib.image import imread
 
 DPI = 100.0
 CAR_XY = (3.0, 3.0)

@@ -9,7 +9,7 @@ steering, differential drive, and mecanum — with normalized actions, a pure-Nu
 simulator, optional parameterized sensors, and reference controllers for reproducible
 evaluation.
 
-Version 0.1.0. Python 3.10+.
+Version 0.1.1. Python 3.10+.
 
 ## At a glance
 
@@ -58,7 +58,7 @@ The core install depends only on `numpy`, `gymnasium`, and `pyyaml`.
 `matplotlib` is needed only for rendering; `imageio` is optional and only used
 for GIF export.
 
-0.1.0 ships exactly one built-in simulator: the pure-NumPy `SimpleBridge`. No
+The 0.1.x line ships exactly one built-in simulator: the pure-NumPy `SimpleBridge`. No
 external simulator is required. The ir-sim and ROS 2 backends are not part of this
 package (they remain in the upstream training repository).
 

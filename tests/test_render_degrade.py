@@ -11,9 +11,15 @@ import pytest
 
 from chassis_sim.bridges import SimpleBridge
 from chassis_sim.chassis import AckermannChassis
-from chassis_sim.render import render_to_png, save_gif
 
-matplotlib = pytest.importorskip("matplotlib")
+# 这个模块遮的是 imageio（降级路径），正向路径仍要 matplotlib 才能出帧；
+# 跳过必须发生在任何 chassis_sim.render 导入与调用之前。
+matplotlib = pytest.importorskip(
+    "matplotlib",
+    reason="render 测试需要 matplotlib（pip install chassis-sim[viz]）",
+)
+
+from chassis_sim.render import render_to_png, save_gif
 
 
 def _make_frames(tmp_path: Path) -> list[Path]:

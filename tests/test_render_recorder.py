@@ -5,9 +5,18 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from chassis_sim.bridges import SimpleBridge
 from chassis_sim.chassis import AckermannChassis
+
+# 回放层只在函数内部 import matplotlib（缺失时抛 ImportError 而不是
+# ModuleNotFoundError），跳过必须发生在任何 chassis_sim.render 导入与调用之前。
+pytest.importorskip(
+    "matplotlib",
+    reason="render 测试需要 matplotlib（pip install chassis-sim[viz]）",
+)
+
 from chassis_sim.render import ReplayRecorder, render_episode_frames
 
 

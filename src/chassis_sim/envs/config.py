@@ -54,9 +54,6 @@ class EnvConfig:
     path_deviation_limit: float = 4.0
     accel_max: float = 0.0
     steer_rate_max: float = 0.0
-    obs_danger: float = 0.3
-    obs_safe: float = 1.0
-    stop_threshold: float = 0.2
     dt: float = 0.1
     wheelbase: float = 0.145
     lidar_max_range: float = 10.0
@@ -109,7 +106,17 @@ class EnvConfig:
 
 @dataclass
 class RewardConfig:
-    """All reward weights and numerical parameters (~23 fields)."""
+    """All reward weights and numerical parameters (~25 fields).
+
+    0.1.1：删除 4 个主仓历史遗留的**死奖励参数** —— RewardCalculator 的签名与
+    构造体里的 kwargs.get 都不消费它们，传进来只会被 **kwargs 吞掉，env 侧因此
+    在构造期打一条 [WARN][env]：alive_bonus / reverse_step_penalty /
+    curvature_scale / heading_alpha。（同批告警的另 8 个键从来不在本 dataclass：
+    4 个是 chassis_env.py 里写死的字面量，3 个曾是 EnvConfig 的字段、已一并删除，
+    path_d_max 则**保留**——它另有 ObservationBuilder 这条活通路。）
+    告警护栏本身**保留**（将来再加死键仍会 warn），见
+    tests/test_envs_config.py::TestNoDeadRewardKwargs。
+    """
 
     # ⚠ 本字典必须与 config/reward.yaml 的 reward_weights **逐键逐值**一致
     #   （主仓 tests/test_config_default_sync.py 锁住；改 YAML 就必须同步改这里）。
@@ -137,6 +144,10 @@ class RewardConfig:
         }
     )
     dense_scale: float = 1.0
+    # CTE 的**观测归一化除数**（err 分量第 0 维 = clip(cte/path_d_max, ±1)）。
+    # ⚠ 它不是奖励参数（RewardCalculator 从不消费），但 env 侧确实把它转发给
+    # ObservationBuilder（chassis_env.py 的 path_d_max=）⇒ 0.1.1 保留本字段与
+    # reward.yaml 的键，只把它从 _rw_kwargs（奖励 kwargs）里摘掉。
     path_d_max: float = 4.0
     cte_range: float = 4.0
     cte_delta: float = 0.5
@@ -173,10 +184,6 @@ class RewardConfig:
     # 超时基项下限（见上方 margin 推导）：timeout 基项恒 ≤ −P。
     timeout_min_penalty: float = 30.0
     path_deviation_penalty: float = -100.0
-    alive_bonus: float = 0.05
-    reverse_step_penalty: float = -0.2
-    curvature_scale: float = 1.0
-    heading_alpha: float = 1.5
     goal_proximity_weight: float = 0.2
     # ── 失败时刻补偿（2026-10-05 接线）────────────────────────────────
     # 这两个键 reward.py 早就在读，但 reward.yaml 经本 dataclass **白名单**转发，
@@ -269,9 +276,6 @@ _REWARD_PARAM_TYPES: dict[str, str] = {
     "cte_dead_zone": "float",
     "goal_time_bonus": "float",
     "step_penalty": "float",
-    "obs_danger": "float",
-    "obs_safe": "float",
-    "stop_threshold": "float",
     "obstacle_range": "float",
     "collision_penalty": "float",
     "collision_surcharge": "float",
@@ -281,10 +285,6 @@ _REWARD_PARAM_TYPES: dict[str, str] = {
     "timeout_penalty": "float",
     "timeout_min_penalty": "float",
     "path_deviation_penalty": "float",
-    "alive_bonus": "float",
-    "reverse_step_penalty": "float",
-    "curvature_scale": "float",
-    "heading_alpha": "float",
     "goal_proximity_weight": "float",
     "failure_dense_cap": "float",
     "failure_dense_refund_cap": "float",
@@ -512,12 +512,11 @@ def _build_env_config(train_raw: dict, reward_raw: dict, env_raw: dict) -> EnvCo
     envs_panel_enabled = bool(_f(train_raw, True, "display.envs_panel"))
     curriculum_enabled = bool(_f(train_raw, True, "auto_curriculum.enabled"))
 
-    # ── 观测阈值：env.yaml 没有它们，reward.yaml 的 reward_params 才是权威 ──
-    _EC = EnvConfig()  # 兜底值来源（obs_danger/obs_safe/stop_threshold 属 EnvConfig）
-    rp = reward_raw.get("reward_params", {}) or {}
-    obs_danger = float(rp.get("obs_danger", _EC.obs_danger))
-    obs_safe = float(rp.get("obs_safe", _EC.obs_safe))
-    stop_threshold = float(rp.get("stop_threshold", _EC.stop_threshold))
+    # ── 观测阈值 obs_danger/obs_safe/stop_threshold 已于 0.1.1 删除 ──────
+    # 它们唯一的消费者是 chassis_env 把它们转发给 RewardCalculator，而后者签名
+    # 与 kwargs.get 都不读 ⇒ 纯死键（配了等于没配）。现在再写进 reward.yaml 的
+    # reward_params 会被当**未知键**拒绝。
+    _EC = EnvConfig()  # 兜底值来源（dynamics 段的 level / 时间常数）
 
     # ── env.yaml：世界步长 / 轮距 / LiDAR 量程（主仓 1308-1317）──
     dt = float(env_raw.get("world", {}).get("step_time", 0.1))
@@ -580,9 +579,6 @@ def _build_env_config(train_raw: dict, reward_raw: dict, env_raw: dict) -> EnvCo
         path_deviation_limit=path_deviation_limit,
         accel_max=accel_max,
         steer_rate_max=steer_rate_max,
-        obs_danger=obs_danger,
-        obs_safe=obs_safe,
-        stop_threshold=stop_threshold,
         dt=dt,
         wheelbase=wheelbase,
         lidar_max_range=lidar_max_range,
@@ -614,7 +610,6 @@ def _build_reward_config(reward_raw: dict) -> RewardConfig:
     reward_weights = dict(reward_raw.get("reward_weights", {}))
     rp = reward_raw.get("reward_params", {}) or {}
     _RD = RewardConfig()  # 兜底值来源
-    _EC = EnvConfig()  # 兜底值来源（obs_danger/obs_safe/stop_threshold）
 
     dense_scale = float(rp.get("dense_scale", _RD.dense_scale))
     path_d_max = float(rp.get("path_d_max", _RD.path_d_max))
@@ -646,12 +641,6 @@ def _build_reward_config(reward_raw: dict) -> RewardConfig:
     path_deviation_penalty = float(
         rp.get("path_deviation_penalty", _RD.path_deviation_penalty)
     )
-    alive_bonus = float(rp.get("alive_bonus", _RD.alive_bonus))
-    reverse_step_penalty = float(
-        rp.get("reverse_step_penalty", _RD.reverse_step_penalty)
-    )
-    curvature_scale = float(rp.get("curvature_scale", _RD.curvature_scale))
-    heading_alpha = float(rp.get("heading_alpha", _RD.heading_alpha))
     goal_proximity_weight = float(
         rp.get("goal_proximity_weight", _RD.goal_proximity_weight)
     )
@@ -738,10 +727,6 @@ def _build_reward_config(reward_raw: dict) -> RewardConfig:
         timeout_penalty=timeout_penalty,
         timeout_min_penalty=timeout_min_penalty,
         path_deviation_penalty=path_deviation_penalty,
-        alive_bonus=alive_bonus,
-        reverse_step_penalty=reverse_step_penalty,
-        curvature_scale=curvature_scale,
-        heading_alpha=heading_alpha,
         goal_proximity_weight=goal_proximity_weight,
         failure_dense_cap=failure_dense_cap,
         failure_dense_refund_cap=failure_dense_refund_cap,

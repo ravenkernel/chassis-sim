@@ -68,9 +68,6 @@ class TestLoadDefaultConfig:
         assert env.v_min == pytest.approx(-0.6)
         assert env.v_max == pytest.approx(1.2)
         assert env.delta_max == pytest.approx(0.526)
-        assert env.obs_danger == pytest.approx(0.3)
-        assert env.obs_safe == pytest.approx(1.0)
-        assert env.stop_threshold == pytest.approx(0.2)
         assert env.privileged_enabled is False
         assert env.privileged_bins == 36
 
@@ -220,15 +217,18 @@ class TestFromConfigDir:
         assert env.wheelbase == pytest.approx(0.2)
         assert env.lidar_max_range == pytest.approx(8.0)  # 取**第一个** lidar2d
 
-    def test_obs_thresholds_come_from_reward_yaml(self, tmp_path):
-        _write_minimal(
-            tmp_path,
-            reward_params={"obs_danger": 0.25, "obs_safe": 1.4, "stop_threshold": 0.15},
-        )
-        env, _ = from_config_dir(tmp_path)
-        assert env.obs_danger == pytest.approx(0.25)
-        assert env.obs_safe == pytest.approx(1.4)
-        assert env.stop_threshold == pytest.approx(0.15)
+    @pytest.mark.parametrize(
+        "key", ["obs_danger", "obs_safe", "stop_threshold"]
+    )
+    def test_removed_obs_thresholds_are_rejected(self, tmp_path, key):
+        """0.1.1 删掉的 3 个死键：再写进 reward.yaml 必须被当**未知键**拒绝。
+
+        它们是死键（唯一"消费者"是 env 侧转发给 RewardCalculator，而后者不读），
+        删字段 + 删类型表条目之后，配置层不再静默接受它们。
+        """
+        _write_minimal(tmp_path, reward_params={key: 0.25})
+        with pytest.raises(ValueError, match="未知键"):
+            from_config_dir(tmp_path)
 
 
 class TestValidation:
@@ -438,3 +438,33 @@ class TestDynamicsSection:
         env, _ = from_config_dir(tmp_path)
         assert env.dynamics == "none"
         assert env.v_tau == EnvConfig().v_tau
+
+
+class TestNoDeadRewardKwargs:
+    """防回归：env 侧不得转发任何 RewardCalculator 不消费的奖励参数。
+
+    0.1.1 删掉了 11 个死键（本库零消费者）：4 个曾在本 dataclass
+    （alive_bonus / reverse_step_penalty / curvature_scale / heading_alpha）、
+    4 个是 chassis_env.py 里写死的字面量（speed_gate_threshold / path_d_scale /
+    progress_gate_threshold / progress_gate_mode）、3 个是 EnvConfig 的字段
+    （obs_danger / obs_safe / stop_threshold，字段已删）。
+    path_d_max **保留**：它另有 ObservationBuilder 这条活通路，只是不再当奖励参数转发。
+    """
+
+    def test_ctor_does_not_warn_dead_reward_kwargs(self, capsys):
+        from chassis_sim.envs.chassis_env import ChassisSimEnv
+
+        env = ChassisSimEnv("ackermann")
+        try:
+            err = capsys.readouterr().err
+            assert "不会被 RewardCalculator 消费" not in err, err
+            assert env.reward_kwargs_rejected == ()
+        finally:
+            env.close()
+
+    def test_guard_still_fires_for_a_new_dead_key(self):
+        """护栏本身必须还在：给它一个签名与 kwargs.get 都不认识的键，仍要报出来。"""
+        from chassis_sim.envs.chassis_env import reward_kwargs_not_accepted
+
+        assert reward_kwargs_not_accepted({"bogus_key": 1}) == ["bogus_key"]
+        assert reward_kwargs_not_accepted({"obstacle_range": 0.8}) == []

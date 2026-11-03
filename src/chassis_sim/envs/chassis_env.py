@@ -508,26 +508,24 @@ class ChassisSimEnv(gym.Env):
         # 兜底），因此必须保证每个键都真的在奖励计算器里被消费；否则就是
         # "env 侧看起来活着、实际被 **kwargs 吞掉"的假接线。构造前用
         # reward_kwargs_not_accepted() 按**真实签名 + kwargs.get 扫描**校验。
+        # 0.1.1：删掉 11 个从未被 RewardCalculator 消费的键（原 WARN 的 12 个减去
+        # path_d_max —— 它另有 ObservationBuilder 的显式通路，见下方 P2-19）：
+        # reverse_step_penalty / alive_bonus / curvature_scale / heading_alpha
+        # 来自旧 RewardConfig；speed_gate_threshold / path_d_scale /
+        # progress_gate_threshold / progress_gate_mode 是本文件里的字面量；
+        # obs_danger / obs_safe / stop_threshold 是 EnvConfig 的字段（字段已删）。
+        # 护栏本身保留：将来再加死键，这里仍会 warn（strict 下 raise）。
         _rw_kwargs: dict[str, Any] = {
             "weights": _rw,
             "obstacle_range": _rc.obstacle_range,
             "collision_penalty": _rc.collision_penalty,
             "goal_bonus": _rc.goal_bonus,
             "goal_heading_scale": _rc.goal_heading_scale,
-            "reverse_step_penalty": _rc.reverse_step_penalty,
-            "alive_bonus": _rc.alive_bonus,
             "dense_scale": _rc.dense_scale,
-            "path_d_max": _rc.path_d_max,
             "stuck_penalty": _rc.stuck_penalty,
             "timeout_penalty": _rc.timeout_penalty,
             "path_deviation_penalty": _rc.path_deviation_penalty,
-            "curvature_scale": _rc.curvature_scale,
-            "heading_alpha": _rc.heading_alpha,
             "v_min": _ec.v_min,
-            "speed_gate_threshold": 0.10,
-            "path_d_scale": 1.0,
-            "progress_gate_threshold": 0.02,
-            "progress_gate_mode": "quadratic",
             "goal_time_bonus": _rc.goal_time_bonus,
             "cte_range": _rc.cte_range,
             "step_penalty": _rc.step_penalty,
@@ -571,9 +569,6 @@ class ChassisSimEnv(gym.Env):
             # reward.yaml 三向一致（60.0 / 30.0）；getattr 兜底只为兼容旧 RewardConfig。
             "collision_surcharge": getattr(_rc, "collision_surcharge", 60.0),
             "timeout_min_penalty": getattr(_rc, "timeout_min_penalty", 30.0),
-            "obs_danger": _ec.obs_danger,
-            "obs_safe": _ec.obs_safe,
-            "stop_threshold": _ec.stop_threshold,
         }
         if reward_kwargs_extra:
             _rw_kwargs.update(reward_kwargs_extra)
@@ -616,10 +611,9 @@ class ChassisSimEnv(gym.Env):
 
         # ObservationBuilder — 组装原始传感器数据（编码器已移入 Actor）
         # 【P2-19 接线】path_d_max 是 CTE 的**观测归一化除数**（err 分量第 0 维
-        # cte/path_d_max，clip 到 ±1）。此前 env 不传它 ⇒ ObservationBuilder
-        # 一直用自己签名里的默认 4.0，于是 reward.yaml 的 path_d_max 是**死键**：
-        # 改 YAML 完全不改变观测（"改配置真的会改变行为"这条断言失败）。
-        # 现在从 RewardConfig 转发；getattr 兜底兼容没有该字段的旧 RewardConfig。
+        # cte/path_d_max，clip 到 ±1），从 RewardConfig 转发；getattr 兜底兼容
+        # 没有该字段的旧 RewardConfig。0.1.1：它**不是**奖励参数（RewardCalculator
+        # 从不消费）⇒ 只从 _rw_kwargs 摘掉，字段 / YAML 键 / 本行一律保留。
         self.obs_builder = ObservationBuilder(
             device=device,
             max_path_points=self._max_path_points,
