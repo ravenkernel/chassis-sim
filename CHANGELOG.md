@@ -1,7 +1,21 @@
 # Changelog
 
 All notable changes to `chassis-sim`. This file documents the changes present in
-the working tree; the most recent release is `1.0.0`.
+the working tree; the most recent release is `1.0.1`.
+
+## 1.0.1
+
+### Fixed
+
+- **Project links follow the GitHub rename** (`zhao6663` → `ravenkernel`). The badges, the
+  eleven gallery image URLs, the release/issue links and `[project.urls]` now point at
+  `github.com/ravenkernel/chassis-sim`. The old links still resolve through GitHub's
+  redirect, but a redirect is not a contract.
+- **The metadata published as 1.0.0 could not be corrected in place.** Project URLs and the
+  long description are immutable once uploaded, so 1.0.1 re-publishes the same content with
+  the new owner (the images inside the 1.0.0 PyPI description pointed at the old account).
+
+No functional changes: the package code is identical to 1.0.0.
 
 ## 1.0.0
 

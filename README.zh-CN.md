@@ -1,9 +1,9 @@
 # chassis-sim
 
-[English](https://github.com/zhao6663/chassis-sim/blob/main/README.md) | 简体中文
+[English](https://github.com/ravenkernel/chassis-sim/blob/main/README.md) | 简体中文
 
-[![CI](https://github.com/zhao6663/chassis-sim/actions/workflows/ci.yml/badge.svg)](https://github.com/zhao6663/chassis-sim/actions/workflows/ci.yml)
-[![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue)](https://github.com/zhao6663/chassis-sim)
+[![CI](https://github.com/ravenkernel/chassis-sim/actions/workflows/ci.yml/badge.svg)](https://github.com/ravenkernel/chassis-sim/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue)](https://github.com/ravenkernel/chassis-sim)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 **三种底盘的小型 Gymnasium 基准** —— 阿克曼转向、差速驱动、麦轮 —— 归一化动作、
@@ -43,14 +43,14 @@ pip install "chassis-sim[viz]==1.0.0"   # 锁定版本
 ```
 
 只要核心依赖就去掉 `[viz]`；Hybrid-A* 地图生成器在 `[planning]` 里。想按 tag 锁定
-而不是走 PyPI，每个 tag 的 [GitHub release](https://github.com/zhao6663/chassis-sim/releases)
+而不是走 PyPI，每个 tag 的 [GitHub release](https://github.com/ravenkernel/chassis-sim/releases)
 页面都挂着 wheel。0.2.x 是迁移案例：它的默认观测、传感器访问器和若干模块路径都与
 1.0.0 不同 —— 对照表见 [docs/migration-1.0.md](docs/migration-1.0.md)。
 
 从源码安装（含开发工具）：
 
 ```bash
-git clone https://github.com/zhao6663/chassis-sim.git
+git clone https://github.com/ravenkernel/chassis-sim.git
 cd chassis-sim
 pip install -e ".[dev]"
 ```
@@ -143,9 +143,9 @@ python examples/gallery.py --out docs/media
 <table>
 <tbody>
 <tr>
-<td align="center" width="33%"><a href="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/chassis_ackermann.gif"><img src="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/chassis_ackermann.gif" width="250" alt="阿克曼底盘跟踪 obstacles_sparse 路径"></a><br><code>chassis_ackermann.gif</code><br><em>obstacles_sparse · ackermann · pure_pursuit</em></td>
-<td align="center" width="33%"><a href="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/chassis_diff_drive.gif"><img src="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/chassis_diff_drive.gif" width="250" alt="差速底盘跟踪同一条 obstacles_sparse 路径"></a><br><code>chassis_diff_drive.gif</code><br><em>obstacles_sparse · diff_drive · pure_pursuit</em></td>
-<td align="center" width="33%"><a href="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/chassis_mecanum.gif"><img src="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/chassis_mecanum.gif" width="250" alt="麦轮底盘跟踪同一条 obstacles_sparse 路径"></a><br><code>chassis_mecanum.gif</code><br><em>obstacles_sparse · mecanum · pure_pursuit</em></td>
+<td align="center" width="33%"><a href="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/chassis_ackermann.gif"><img src="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/chassis_ackermann.gif" width="250" alt="阿克曼底盘跟踪 obstacles_sparse 路径"></a><br><code>chassis_ackermann.gif</code><br><em>obstacles_sparse · ackermann · pure_pursuit</em></td>
+<td align="center" width="33%"><a href="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/chassis_diff_drive.gif"><img src="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/chassis_diff_drive.gif" width="250" alt="差速底盘跟踪同一条 obstacles_sparse 路径"></a><br><code>chassis_diff_drive.gif</code><br><em>obstacles_sparse · diff_drive · pure_pursuit</em></td>
+<td align="center" width="33%"><a href="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/chassis_mecanum.gif"><img src="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/chassis_mecanum.gif" width="250" alt="麦轮底盘跟踪同一条 obstacles_sparse 路径"></a><br><code>chassis_mecanum.gif</code><br><em>obstacles_sparse · mecanum · pure_pursuit</em></td>
 </tr>
 </tbody>
 </table>
@@ -161,8 +161,8 @@ python examples/gallery.py --out docs/media
 <table>
 <tbody>
 <tr>
-<td align="center" width="50%"><a href="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/controller_pure_pursuit.gif"><img src="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/controller_pure_pursuit.gif" width="400" alt="纯追踪控制器跑 dense_static 路径"></a><br><code>controller_pure_pursuit.gif</code><br><em>dense_static · ackermann · pure_pursuit</em></td>
-<td align="center" width="50%"><a href="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/controller_dwa.gif"><img src="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/controller_dwa.gif" width="400" alt="DWA 控制器跑 dense_static 路径"></a><br><code>controller_dwa.gif</code><br><em>dense_static · ackermann · dwa</em></td>
+<td align="center" width="50%"><a href="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/controller_pure_pursuit.gif"><img src="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/controller_pure_pursuit.gif" width="400" alt="纯追踪控制器跑 dense_static 路径"></a><br><code>controller_pure_pursuit.gif</code><br><em>dense_static · ackermann · pure_pursuit</em></td>
+<td align="center" width="50%"><a href="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/controller_dwa.gif"><img src="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/controller_dwa.gif" width="400" alt="DWA 控制器跑 dense_static 路径"></a><br><code>controller_dwa.gif</code><br><em>dense_static · ackermann · dwa</em></td>
 </tr>
 </tbody>
 </table>
@@ -175,16 +175,16 @@ DWA 走更保守的一条线，用更少的步数收工。
 <table>
 <tbody>
 <tr>
-<td align="center" width="50%"><a href="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/scene_straight.png"><img src="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/scene_straight.png" width="400" alt="straight：空场景，只有参考路径与车体轮廓"></a><br><code>scene_straight.png</code><br><em>straight · seed 0 · reset 后第 0 步</em></td>
-<td align="center" width="50%"><a href="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/scene_corridor.png"><img src="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/scene_corridor.png" width="400" alt="corridor：两堵长墙夹出可行带"></a><br><code>scene_corridor.png</code><br><em>corridor · seed 0 · reset 后第 0 步</em></td>
+<td align="center" width="50%"><a href="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/scene_straight.png"><img src="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/scene_straight.png" width="400" alt="straight：空场景，只有参考路径与车体轮廓"></a><br><code>scene_straight.png</code><br><em>straight · seed 0 · reset 后第 0 步</em></td>
+<td align="center" width="50%"><a href="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/scene_corridor.png"><img src="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/scene_corridor.png" width="400" alt="corridor：两堵长墙夹出可行带"></a><br><code>scene_corridor.png</code><br><em>corridor · seed 0 · reset 后第 0 步</em></td>
 </tr>
 <tr>
-<td align="center" width="50%"><a href="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/scene_dense_static.png"><img src="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/scene_dense_static.png" width="400" alt="dense_static：14 个障碍贴参考路径排布"></a><br><code>scene_dense_static.png</code><br><em>dense_static · seed 0 · reset 后第 0 步</em></td>
-<td align="center" width="50%"><a href="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/scene_obstacles_dense.png"><img src="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/scene_obstacles_dense.png" width="400" alt="obstacles_dense：Hybrid-A* 地图生成器产物"></a><br><code>scene_obstacles_dense.png</code><br><em>obstacles_dense · seed 0 · reset 后第 0 步</em></td>
+<td align="center" width="50%"><a href="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/scene_dense_static.png"><img src="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/scene_dense_static.png" width="400" alt="dense_static：14 个障碍贴参考路径排布"></a><br><code>scene_dense_static.png</code><br><em>dense_static · seed 0 · reset 后第 0 步</em></td>
+<td align="center" width="50%"><a href="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/scene_obstacles_dense.png"><img src="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/scene_obstacles_dense.png" width="400" alt="obstacles_dense：Hybrid-A* 地图生成器产物"></a><br><code>scene_obstacles_dense.png</code><br><em>obstacles_dense · seed 0 · reset 后第 0 步</em></td>
 </tr>
 <tr>
-<td align="center" width="50%"><a href="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/scene_dynamic_crossing.png"><img src="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/scene_dynamic_crossing.png" width="400" alt="dynamic_crossing：动态圆在 t=0 时的位姿"></a><br><code>scene_dynamic_crossing.png</code><br><em>dynamic_crossing · seed 0 · reset 后第 0 步</em></td>
-<td align="center" width="50%"><a href="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/scene_obstacles_sparse.png"><img src="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/scene_obstacles_sparse.png" width="400" alt="obstacles_sparse：Hybrid-A* 地图生成器产物"></a><br><code>scene_obstacles_sparse.png</code><br><em>obstacles_sparse · seed 0 · reset 后第 0 步</em></td>
+<td align="center" width="50%"><a href="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/scene_dynamic_crossing.png"><img src="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/scene_dynamic_crossing.png" width="400" alt="dynamic_crossing：动态圆在 t=0 时的位姿"></a><br><code>scene_dynamic_crossing.png</code><br><em>dynamic_crossing · seed 0 · reset 后第 0 步</em></td>
+<td align="center" width="50%"><a href="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/scene_obstacles_sparse.png"><img src="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/scene_obstacles_sparse.png" width="400" alt="obstacles_sparse：Hybrid-A* 地图生成器产物"></a><br><code>scene_obstacles_sparse.png</code><br><em>obstacles_sparse · seed 0 · reset 后第 0 步</em></td>
 </tr>
 </tbody>
 </table>
@@ -937,11 +937,11 @@ CI 在 Python 3.10、3.11、3.12 上跑测试套件（`.github/workflows/ci.yml`
 
 ```bibtex
 @software{chassis_sim_2026,
-  author = {zhao6663},
+  author = {ravenkernel},
   title = {chassis-sim: Gymnasium environments for Ackermann, differential-drive
            and mecanum chassis},
   year = {2026},
-  url = {https://github.com/zhao6663/chassis-sim}
+  url = {https://github.com/ravenkernel/chassis-sim}
 }
 ```
 

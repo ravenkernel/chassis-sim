@@ -25,7 +25,7 @@ from typing import Any
 
 from . import gym_registration as _gym_registration  # noqa: F401 - 注册副作用
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 #: 公共名 -> 定义它的模块。__all__ 是它的键（外加 __version__），
 #: tests/test_api_make.py 锁死两者一致，避免导出名与模块表走散。

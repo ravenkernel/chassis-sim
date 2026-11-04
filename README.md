@@ -1,9 +1,9 @@
 # chassis-sim
 
-English | [简体中文](https://github.com/zhao6663/chassis-sim/blob/main/README.zh-CN.md)
+English | [简体中文](https://github.com/ravenkernel/chassis-sim/blob/main/README.zh-CN.md)
 
-[![CI](https://github.com/zhao6663/chassis-sim/actions/workflows/ci.yml/badge.svg)](https://github.com/zhao6663/chassis-sim/actions/workflows/ci.yml)
-[![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue)](https://github.com/zhao6663/chassis-sim)
+[![CI](https://github.com/ravenkernel/chassis-sim/actions/workflows/ci.yml/badge.svg)](https://github.com/ravenkernel/chassis-sim/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue)](https://github.com/ravenkernel/chassis-sim)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 **A small, dependency-light Gymnasium benchmark for three chassis types** — Ackermann
@@ -49,7 +49,7 @@ pip install "chassis-sim[viz]==1.0.0"   # pin the release
 
 Drop the `[viz]` suffix for a core install, or use `[planning]` for the Hybrid-A* map
 generator. To pin to a tag instead of PyPI, every tag carries a wheel on its
-[GitHub release](https://github.com/zhao6663/chassis-sim/releases) page. The 0.2.x line
+[GitHub release](https://github.com/ravenkernel/chassis-sim/releases) page. The 0.2.x line
 is the migration case: its default observation, its sensor accessors and several
 module paths differ from 1.0.0 — see [docs/migration-1.0.md](docs/migration-1.0.md)
 for the old → new table.
@@ -57,7 +57,7 @@ for the old → new table.
 From a checkout, with the development tools:
 
 ```bash
-git clone https://github.com/zhao6663/chassis-sim.git
+git clone https://github.com/ravenkernel/chassis-sim.git
 cd chassis-sim
 pip install -e ".[dev]"
 ```
@@ -158,9 +158,9 @@ All three chassis drive the same `obstacles_sparse` path with the same
 <table>
 <tbody>
 <tr>
-<td align="center" width="33%"><a href="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/chassis_ackermann.gif"><img src="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/chassis_ackermann.gif" width="250" alt="Ackermann chassis tracking the obstacles_sparse path"></a><br><code>chassis_ackermann.gif</code><br><em>obstacles_sparse · ackermann · pure_pursuit</em></td>
-<td align="center" width="33%"><a href="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/chassis_diff_drive.gif"><img src="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/chassis_diff_drive.gif" width="250" alt="Differential-drive chassis tracking the same obstacles_sparse path"></a><br><code>chassis_diff_drive.gif</code><br><em>obstacles_sparse · diff_drive · pure_pursuit</em></td>
-<td align="center" width="33%"><a href="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/chassis_mecanum.gif"><img src="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/chassis_mecanum.gif" width="250" alt="Mecanum chassis tracking the same obstacles_sparse path"></a><br><code>chassis_mecanum.gif</code><br><em>obstacles_sparse · mecanum · pure_pursuit</em></td>
+<td align="center" width="33%"><a href="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/chassis_ackermann.gif"><img src="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/chassis_ackermann.gif" width="250" alt="Ackermann chassis tracking the obstacles_sparse path"></a><br><code>chassis_ackermann.gif</code><br><em>obstacles_sparse · ackermann · pure_pursuit</em></td>
+<td align="center" width="33%"><a href="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/chassis_diff_drive.gif"><img src="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/chassis_diff_drive.gif" width="250" alt="Differential-drive chassis tracking the same obstacles_sparse path"></a><br><code>chassis_diff_drive.gif</code><br><em>obstacles_sparse · diff_drive · pure_pursuit</em></td>
+<td align="center" width="33%"><a href="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/chassis_mecanum.gif"><img src="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/chassis_mecanum.gif" width="250" alt="Mecanum chassis tracking the same obstacles_sparse path"></a><br><code>chassis_mecanum.gif</code><br><em>obstacles_sparse · mecanum · pure_pursuit</em></td>
 </tr>
 </tbody>
 </table>
@@ -180,8 +180,8 @@ controller.
 <table>
 <tbody>
 <tr>
-<td align="center" width="50%"><a href="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/controller_pure_pursuit.gif"><img src="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/controller_pure_pursuit.gif" width="400" alt="Pure-pursuit controller on the dense_static path"></a><br><code>controller_pure_pursuit.gif</code><br><em>dense_static · ackermann · pure_pursuit</em></td>
-<td align="center" width="50%"><a href="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/controller_dwa.gif"><img src="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/controller_dwa.gif" width="400" alt="DWA controller on the dense_static path"></a><br><code>controller_dwa.gif</code><br><em>dense_static · ackermann · dwa</em></td>
+<td align="center" width="50%"><a href="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/controller_pure_pursuit.gif"><img src="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/controller_pure_pursuit.gif" width="400" alt="Pure-pursuit controller on the dense_static path"></a><br><code>controller_pure_pursuit.gif</code><br><em>dense_static · ackermann · pure_pursuit</em></td>
+<td align="center" width="50%"><a href="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/controller_dwa.gif"><img src="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/controller_dwa.gif" width="400" alt="DWA controller on the dense_static path"></a><br><code>controller_dwa.gif</code><br><em>dense_static · ackermann · dwa</em></td>
 </tr>
 </tbody>
 </table>
@@ -195,16 +195,16 @@ obstacle cost makes DWA take the more conservative line and finish in fewer step
 <table>
 <tbody>
 <tr>
-<td align="center" width="50%"><a href="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/scene_straight.png"><img src="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/scene_straight.png" width="400" alt="Straight empty scene with reference path and chassis footprint"></a><br><code>scene_straight.png</code><br><em>straight · seed 0 · step 0 after reset</em></td>
-<td align="center" width="50%"><a href="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/scene_corridor.png"><img src="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/scene_corridor.png" width="400" alt="Corridor scene: two long walls squeeze the feasible band"></a><br><code>scene_corridor.png</code><br><em>corridor · seed 0 · step 0 after reset</em></td>
+<td align="center" width="50%"><a href="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/scene_straight.png"><img src="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/scene_straight.png" width="400" alt="Straight empty scene with reference path and chassis footprint"></a><br><code>scene_straight.png</code><br><em>straight · seed 0 · step 0 after reset</em></td>
+<td align="center" width="50%"><a href="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/scene_corridor.png"><img src="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/scene_corridor.png" width="400" alt="Corridor scene: two long walls squeeze the feasible band"></a><br><code>scene_corridor.png</code><br><em>corridor · seed 0 · step 0 after reset</em></td>
 </tr>
 <tr>
-<td align="center" width="50%"><a href="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/scene_dense_static.png"><img src="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/scene_dense_static.png" width="400" alt="dense_static scene: 14 obstacles hugging the reference path"></a><br><code>scene_dense_static.png</code><br><em>dense_static · seed 0 · step 0 after reset</em></td>
-<td align="center" width="50%"><a href="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/scene_obstacles_dense.png"><img src="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/scene_obstacles_dense.png" width="400" alt="obstacles_dense scene generated by the Hybrid-A* map generator"></a><br><code>scene_obstacles_dense.png</code><br><em>obstacles_dense · seed 0 · step 0 after reset</em></td>
+<td align="center" width="50%"><a href="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/scene_dense_static.png"><img src="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/scene_dense_static.png" width="400" alt="dense_static scene: 14 obstacles hugging the reference path"></a><br><code>scene_dense_static.png</code><br><em>dense_static · seed 0 · step 0 after reset</em></td>
+<td align="center" width="50%"><a href="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/scene_obstacles_dense.png"><img src="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/scene_obstacles_dense.png" width="400" alt="obstacles_dense scene generated by the Hybrid-A* map generator"></a><br><code>scene_obstacles_dense.png</code><br><em>obstacles_dense · seed 0 · step 0 after reset</em></td>
 </tr>
 <tr>
-<td align="center" width="50%"><a href="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/scene_dynamic_crossing.png"><img src="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/scene_dynamic_crossing.png" width="400" alt="dynamic_crossing scene with the moving circle at its t=0 pose"></a><br><code>scene_dynamic_crossing.png</code><br><em>dynamic_crossing · seed 0 · step 0 after reset</em></td>
-<td align="center" width="50%"><a href="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/scene_obstacles_sparse.png"><img src="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/scene_obstacles_sparse.png" width="400" alt="obstacles_sparse scene generated by the Hybrid-A* map generator"></a><br><code>scene_obstacles_sparse.png</code><br><em>obstacles_sparse · seed 0 · step 0 after reset</em></td>
+<td align="center" width="50%"><a href="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/scene_dynamic_crossing.png"><img src="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/scene_dynamic_crossing.png" width="400" alt="dynamic_crossing scene with the moving circle at its t=0 pose"></a><br><code>scene_dynamic_crossing.png</code><br><em>dynamic_crossing · seed 0 · step 0 after reset</em></td>
+<td align="center" width="50%"><a href="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/scene_obstacles_sparse.png"><img src="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/scene_obstacles_sparse.png" width="400" alt="obstacles_sparse scene generated by the Hybrid-A* map generator"></a><br><code>scene_obstacles_sparse.png</code><br><em>obstacles_sparse · seed 0 · step 0 after reset</em></td>
 </tr>
 </tbody>
 </table>
@@ -1021,11 +1021,11 @@ If you use this package in academic work, cite the repository:
 
 ```bibtex
 @software{chassis_sim_2026,
-  author = {zhao6663},
+  author = {ravenkernel},
   title = {chassis-sim: Gymnasium environments for Ackermann, differential-drive
            and mecanum chassis},
   year = {2026},
-  url = {https://github.com/zhao6663/chassis-sim}
+  url = {https://github.com/ravenkernel/chassis-sim}
 }
 ```
 
