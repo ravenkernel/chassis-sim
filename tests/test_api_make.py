@@ -138,6 +138,8 @@ class TestOverrideValidation:
             assert env.render_mode == "rgb_array"
             assert "rgb_array" in env.metadata["render_modes"]
             assert env.metadata["render_fps"] == 10
+            # 真渲染要可视化依赖：core-only 安装（只有 .[dev]）里没有 matplotlib
+            pytest.importorskip("matplotlib")
             # gymnasium 的 OrderEnforcing（gym.make 包装层）要求先 reset 再 render
             env.reset(seed=0)
             frame = env.render()

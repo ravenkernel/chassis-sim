@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import os
 
 import numpy as np
 import pytest
@@ -493,6 +494,12 @@ _ENV_CFG = {
 }
 
 # 改动前的指纹（2026-11-05，/tmp/probe_pre.py，本仓 src 上的旧 integrate）
+#
+# 这些数值只在本机口径（Linux / CPython 3.12 / numpy 2.x）成立：摘要里含路径点的
+# trig 结果，libm 与 numpy 版本一变字节就变。所以默认走**同进程**的 Old-vs-New 对照，
+# 记录值只在 CHASSIS_STRICT_GOLDEN=1 时再断言（跨环境 CI 不认绝对值）。
+_STRICT_GOLDEN = os.environ.get("CHASSIS_STRICT_GOLDEN") == "1"
+
 _LEGACY_DIGESTS = {
     "ackermann_straight": (
         "39ee385305b3a4720403702f56cd247a4acabef461a604137d93ad6f4d94900a",
@@ -574,36 +581,50 @@ def _digest_run(chassis_name: str, actions, poke_wheels: bool = False):
         ("mecanum", _STRAIGHT_MECANUM),
     ],
 )
-def test_straight_line_obs_reward_digest_unchanged(chassis_name, actions):
-    """ω=0 的回合（全直线动作）必须与改动前**逐位**相同：退化分支没被改写。
+def test_straight_line_obs_reward_digest_unchanged(chassis_name, actions, monkeypatch):
+    """ω=0 的回合（全直线动作）必须与旧 Euler 实现**逐位**相同：退化分支没被改写。
 
-    这三条指纹是改代码之前录的，它们是"默认行为可解释、可回归"的锚点。
+    对照在同一进程里做（把 integrate 换回 _euler_method 再跑一遍），所以它证明的是
+    "退化分支逐位未变"这条不变量本身，而不是"这台机器的 libm 和作者一致"。
+    绝对值锚点见 _LEGACY_DIGESTS，只在本机口径 / CHASSIS_STRICT_GOLDEN=1 下核对。
     """
-    expected, expected_steps = _LEGACY_DIGESTS[f"{chassis_name}_straight"]
-    digest, steps = _digest_run(chassis_name, actions)
-    assert steps == expected_steps
-    assert digest == expected
+    new_digest, new_steps = _digest_run(chassis_name, actions)
+
+    monkeypatch.setattr(Chassis, "integrate", _euler_method)
+    old_digest, old_steps = _digest_run(chassis_name, actions)
+    monkeypatch.undo()
+
+    assert new_steps == old_steps
+    assert new_digest == old_digest
+
+    if _STRICT_GOLDEN:
+        expected, expected_steps = _LEGACY_DIGESTS[f"{chassis_name}_straight"]
+        assert (new_digest, new_steps) == (expected, expected_steps)
 
 
 def test_turning_round_diff_is_attributable_to_integration_alone(monkeypatch):
-    """转向回合：新指纹变了，但把 integrate 换回旧 Euler 就逐位复现旧指纹。
+    """转向回合：闭式积分改变了指纹，而换回旧 Euler 就逐位复现旧指纹。
 
     这条是"归因"的证据：同一份 env / 桥 / 奖励 / 观测代码，唯一变量是积分式。
     """
-    legacy_digest, legacy_steps = _LEGACY_DIGESTS["ackermann_turning"]
+    new_digest, new_steps = _digest_run("ackermann", _TURNING_ACK)
 
     monkeypatch.setattr(Chassis, "integrate", _euler_method)
-    patched_digest, patched_steps = _digest_run("ackermann", _TURNING_ACK)
-    assert (patched_digest, patched_steps) == (legacy_digest, legacy_steps)
-
+    old_digest, old_steps = _digest_run("ackermann", _TURNING_ACK)
     monkeypatch.undo()
-    new_digest, new_steps = _digest_run("ackermann", _TURNING_ACK)
-    assert new_steps == legacy_steps
-    assert new_digest != legacy_digest, "闭式积分必须改变 ω≠0 的轨迹（否则它没生效）"
+
+    assert new_steps == old_steps
+    assert new_digest != old_digest, "闭式积分必须改变 ω≠0 的轨迹（否则它没生效）"
+
+    if _STRICT_GOLDEN:
+        legacy_digest, legacy_steps = _LEGACY_DIGESTS["ackermann_turning"]
+        assert (old_digest, old_steps) == (legacy_digest, legacy_steps)
 
 
 def test_wheel_kinematics_calls_do_not_perturb_obs_reward_digest():
     """④ 的后半句：轮级层纯只读 —— 每步调用它，指纹与不调用时逐位相同。"""
-    expected, expected_steps = _LEGACY_DIGESTS["ackermann_straight"]
-    digest, steps = _digest_run("ackermann", _STRAIGHT_ACK, poke_wheels=True)
-    assert (digest, steps) == (expected, expected_steps)
+    plain_digest, plain_steps = _digest_run("ackermann", _STRAIGHT_ACK)
+    poked_digest, poked_steps = _digest_run(
+        "ackermann", _STRAIGHT_ACK, poke_wheels=True
+    )
+    assert (poked_digest, poked_steps) == (plain_digest, plain_steps)
