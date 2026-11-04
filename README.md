@@ -992,27 +992,23 @@ installed.
    installed as `chassis_sim.render` would be replaced the first time the renderer is
    imported (which `cs.record()` does). Hence the distinct name; the drawing
    primitives stay in `chassis_sim.render`.
-4. **`ChassisSimEnv(device=...)` is an inert parameter.** The encoder lives in the
-   actor and the observation builder is pure NumPy, so `device` no longer selects
-   anything; the parameter is kept only so existing training scripts that forward it
-   keep importing. Do not expect it to move computation.
-5. **Discrete collision test, no swept body.** Collision is a discrete per-step test
+4. **Discrete collision test, no swept body.** Collision is a discrete per-step test
    of the current body OBB against circles and oriented rectangles (with a safety
    margin); there is no swept-body / continuous (CCD) check, so a fast reverse can
    still clip a corner between ticks.
-6. **A missing LiDAR frame inside the observation is zero-order hold, not truth.**
+5. **A missing LiDAR frame inside the observation is zero-order hold, not truth.**
    When a frame is delayed or dropped, the `LidarSegment` repeats the last valid scan
    (and falls back to `max_range` before the first one). The observation carries no
    validity bit, so a consumer cannot tell a fresh scan from a held one without
    reading `scan_meta` in `info`.
-7. **DWA gear selection is off by default.** `gear_mode="auto"` truncates
+6. **DWA gear selection is off by default.** `gear_mode="auto"` truncates
    candidates to one direction and is sensitive to `heading_lookahead`; with the
    discrete collision test above, a hard gear choice can collide during a maneuver
    that a full-range candidate set would avoid.
-8. **No camera.** There is no RGB, depth, or segmentation sensor.
-9. **One map per core scenario.** Core scenarios are fixed YAML maps; only the
+7. **No camera.** There is no RGB, depth, or segmentation sensor.
+8. **One map per core scenario.** Core scenarios are fixed YAML maps; only the
    planning scenarios (and a custom callable) produce a new map per episode.
-10. **Gallery clips are a 12 fps sample of a 10 Hz loop.** A clip skips ticks
+9. **Gallery clips are a 12 fps sample of a 10 Hz loop.** A clip skips ticks
     between frames and plays faster than real time, so it is an illustration of the
     behaviour, not a record of the control sequence; re-run `examples/gallery.py` to
     regenerate the frames from the current code.

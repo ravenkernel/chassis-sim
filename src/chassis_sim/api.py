@@ -69,7 +69,6 @@ _ENV_PARAM_FIELDS = (
 # 只属于 env 的构造参数（EnvConfig 里没有同名字段）
 _EXTRA_ENV_ARGS = (
     "bridge",
-    "device",
     "map_generator",
     "safety_gate",
     "env_index",
@@ -139,7 +138,7 @@ def make(
             等价于 sensors= 覆盖；只在 env 自造桥时生效。
         obs: obs_spec 的别名（ObsSpec 实例）。
         **overrides: EnvConfig 字段名（v_max / dt / domain_rand_enabled ...）或
-            env 专属构造参数（device / map_generator / reward_cfg ...）。
+            env 专属构造参数（map_generator / reward_cfg / safety_gate ...）。
             未知键直接 ValueError。
 
     Returns:

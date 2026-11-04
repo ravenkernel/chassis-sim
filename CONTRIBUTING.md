@@ -45,6 +45,11 @@ push, and each must exit 0. This table is a line-by-line mapping onto
 | types | `MYPYPATH=src mypy` | job `types` → step `mypy` → `env: MYPYPATH: src`, run `python -m mypy` |
 | coverage | `env -u PYTHONPATH pytest -q --cov --cov-report=term:skip-covered --cov-fail-under=82` | job `coverage` → step `Test with coverage gate` → the same command |
 
+That `tests` gate is the same command on every runner: CI runs the suite on ubuntu
+(Python 3.10–3.13) and on macOS / Windows (Python 3.12, job `test-os`), so a
+platform-specific failure lands in the gate this pull request is measured against
+rather than in the first run of a user.
+
 Why the local commands differ, where they do:
 
 - `env -u PYTHONPATH` is the only local-only prefix. CI starts without a `PYTHONPATH`,

@@ -156,6 +156,15 @@ def test_rejects_mismatched_bridge(env_factory):
         env_factory("ackermann", bridge=bridge)
 
 
+def test_device_kwarg_is_removed():
+    """2.0.0：device 形参已删，传它必须是 TypeError（锁住"删掉"而不是静默回来）。"""
+    import inspect
+
+    assert "device" not in inspect.signature(ChassisSimEnv.__init__).parameters
+    with pytest.raises(TypeError, match="device"):
+        ChassisSimEnv(device="cpu")
+
+
 def test_safety_gate_only_for_ackermann(env_factory):
     class _Gate:
         brake_triggered = False
@@ -444,7 +453,6 @@ def _make_parity_pair(scene):
         reward_cfg=MainRewardConfig(),
         map_generator=scene,
         domain_rand=False,
-        device="cpu",
     )
     chip = ChassisSimEnv(
         "ackermann",

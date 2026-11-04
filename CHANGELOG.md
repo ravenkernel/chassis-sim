@@ -1,7 +1,41 @@
 # Changelog
 
 All notable changes to `chassis-sim`. This file documents the changes present in
-the working tree; the most recent release is `1.1.1`.
+the working tree; the most recent release is `2.0.0`.
+
+## 2.0.0
+
+### Breaking
+
+- **`ChassisSimEnv(device=...)` and `cs.make(..., device=...)` are gone.** The parameter
+  had been inert since 1.0 — the encoder lives in the Actor and `ContextBuilder` only
+  computes numpy — and was documented as inert. A no-op keyword is still public API, so
+  removing it is a major bump rather than a patch: `ChassisSimEnv(device="cpu")` now
+  raises `TypeError: __init__() got an unexpected keyword argument 'device'`, and
+  `cs.make(device="cpu")` raises `ValueError: 未知的 make() 参数 ['device']` followed by
+  the 57 accepted keys. Grep training scripts for `device=` before upgrading; nothing
+  else about the constructor changed.
+- **The matching entry is gone from both READMEs' `Known limitations` sections**, which
+  are renumbered (nine items, no gap).
+
+### Changed
+
+- **CI now runs the same suite on macOS and Windows** (new `test-os` job: Python 3.12,
+  `[dev,viz,planning]`, `shell: bash`, `PYTHONUTF8=1`), so the declared
+  `Operating System :: OS Independent` classifier has something behind it instead of an
+  ubuntu-only history. ubuntu still covers 3.10–3.13.
+
+### Fixed
+
+- **Worker crash logs no longer vanish on Windows.** `reset()` and `step()` wrote the
+  traceback to a hard-coded `/tmp/ackermann_worker_crash.log`; Windows has no `/tmp`, so
+  `open()` raised `FileNotFoundError`, the surrounding `except` swallowed it, and the
+  diagnostic disappeared. The path now comes from `tempfile.gettempdir()` and the write is
+  explicitly UTF-8 — a Chinese traceback cannot be encoded through the default ANSI code
+  page either.
+
+No other functional changes: observation layout, rewards, sensors, controllers, planning
+and rendering are untouched in this release.
 
 ## 1.1.1
 

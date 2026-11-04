@@ -29,8 +29,10 @@ import functools
 import inspect
 import re
 import sys
+import tempfile
 import warnings
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any, ClassVar
 
 import gymnasium as gym
@@ -49,6 +51,10 @@ from chassis_sim.sensors import Imu, Lidar, WheelOdom
 
 # 零速判据：|v| 小于它时无法由 ω 反解转角（与 controllers/base.py 的 V_EPS 同值）
 V_EPS = 1e-6
+
+# reset/step 的崩溃日志落盘位置：走系统临时目录而不是写死 /tmp（Windows 没有
+# /tmp，写死的路径在那边会 FileNotFoundError，被下面的 except 吞掉 ⇒ 诊断丢失）。
+_CRASH_LOG = Path(tempfile.gettempdir()) / "ackermann_worker_crash.log"
 
 # 字符串车型 → make_chassis 的参数白名单：键名必须同时存在于 EnvConfig 与对应
 # Chassis 的构造签名（差速/麦轮不收 v_min/delta_max/kappa_max 等）。
@@ -266,9 +272,6 @@ class ChassisSimEnv(gym.Env):
         cfg: EnvConfig | None = None,
         reward_cfg: RewardConfig | None = None,
         max_steps: int | None = None,
-        # 1.0 起 env 不持有 device：编码器早已移入 Actor，ContextBuilder 只算
-        # numpy。形参保留给外部训练脚本传参（它不再影响任何行为）。
-        device: str = "cpu",
         map_generator=None,
         safety_gate=None,
         domain_rand: bool = False,
@@ -739,7 +742,7 @@ class ChassisSimEnv(gym.Env):
                 f"{traceback.format_exc()}"
             )
             try:
-                with open("/tmp/ackermann_worker_crash.log", "a") as f:
+                with open(_CRASH_LOG, "a", encoding="utf-8") as f:
                     f.write(crash)
             except Exception:  # noqa: BLE001, S110 - 写崩溃日志本身失败也不能吞掉原始异常
                 pass
@@ -1396,7 +1399,7 @@ class ChassisSimEnv(gym.Env):
                 f"{traceback.format_exc()}"
             )
             try:
-                with open("/tmp/ackermann_worker_crash.log", "a") as f:
+                with open(_CRASH_LOG, "a", encoding="utf-8") as f:
                     f.write(crash)
             except Exception:  # noqa: BLE001, S110 - 同上：日志写入失败不得掩盖原始异常
                 pass

@@ -120,7 +120,15 @@ class TestOverrideValidation:
             cs.make("ackermann", turbo=1)
         message = str(excinfo.value)
         assert "turbo" in message
-        assert "可用键共" in message
+        assert "可用键共 57 个" in message
+
+    def test_device_is_unknown_key(self):
+        """2.0.0：env 的 device 形参已删，make() 不能再把它当合法键收下。"""
+        with pytest.raises(ValueError) as excinfo:
+            cs.make("ackermann", device="cpu")
+        message = str(excinfo.value)
+        assert "device" in message
+        assert "可用键" in message
 
     def test_alias_conflict_raises(self):
         spec = ObsSpec.default()
