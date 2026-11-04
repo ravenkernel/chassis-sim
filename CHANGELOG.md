@@ -23,7 +23,10 @@ the working tree; the most recent release is `2.0.0`.
 - **CI now runs the same suite on macOS and Windows** (new `test-os` job: Python 3.12,
   `[dev,viz,planning]`, `shell: bash`, `PYTHONUTF8=1`), so the declared
   `Operating System :: OS Independent` classifier has something behind it instead of an
-  ubuntu-only history. ubuntu still covers 3.10–3.13.
+  ubuntu-only history. ubuntu still covers 3.10–3.13. The matrix values are written as
+  arrays: a scalar `python-version` keeps the YAML valid but makes GitHub reject the whole
+  workflow (the run then fails with zero jobs and no logs), so `tests/test_ci_workflow.py`
+  pins that shape as well as the job's `shell: bash` steps.
 
 ### Fixed
 

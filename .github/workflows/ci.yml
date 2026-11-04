@@ -40,7 +40,9 @@ jobs:
       fail-fast: false
       matrix:
         os: [macos-latest, windows-latest]
-        python-version: "3.12"
+        # 矩阵值必须是数组（或单个 ${{ }} 表达式）：写成 "3.12" 标量会让
+        # **整份 workflow 失效**，run 直接 0 job 失败，而不是这条 job 报错。
+        python-version: ["3.12"]
     env:
       PYTHONUTF8: "1"
     steps:
