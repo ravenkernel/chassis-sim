@@ -55,7 +55,8 @@ _GOLDEN_PATH = Path(__file__).resolve().parent / "data" / "bridge_golden.json"
 
 SEED = 20261104
 N_STEPS_RANDOM = 240
-TOL_POSE = 1e-12  # 位姿逐位一致；实测 0.0
+TOL_POSE = 1e-12  # 位姿"同一公式"；xy 在 ω=0 分支逐位相同（实测 0.0）
+TOL_THETA = 1e-12  # θ 的 ulp 级噪声上限（跨 libm 实测 4.4e-16 ~ 2.7e-15）
 TOL_REVERSE = 1e-3  # 反向对照的最小可分辨偏差（米）
 
 # 与主仓 config/env.yaml 推导值逐位相同（world 10x10 / step_time 0.1 / 两处 margin）
@@ -484,7 +485,13 @@ def test_closed_form_differs_only_in_xy(golden: dict, replay_closed: list) -> No
         print(
             f"[闭式 vs 旧记录] {rec['name']}: max|Δx,Δy|={d_xy:.3e}  max|Δθ|={d_th:.3e}"
         )
-        assert d_th == 0.0, f"{rec['name']}: θ 通道被积分式改动了 {d_th}"
+        # θ 只承诺"同一公式 + ulp 级噪声"：ω 是 np.arctan(clip(κ)·L) 再经
+        # np.tan 得来的（src/chassis_sim/chassis/ackermann.py:71 与 :88），
+        # 两个超越函数的 libm 实现跨平台/版本差 1 ulp，240 步累积后实测
+        # 4.44e-16（Windows）/ 2.22e-15（macOS）/ 2.66e-15（Linux py3.10-3.11）
+        # —— CI run 41901753996。判据是数量级：改成 atan2(dy, dx) 之类"看起来
+        # 等价"的写法，差会从 1e-15 跳到 1e-3 以上。
+        assert d_th <= TOL_THETA, f"{rec['name']}: θ 通道被积分式改动了 {d_th}"
         if np.any(_wrap(np.diff(exp[:, 2])) != 0.0):
             # 转过向 ⇒ 闭式的 A/B 项与 Euler 不同，差必须看得见
             assert d_xy > TOL_POSE, (
