@@ -39,17 +39,17 @@ which is documented in [Observation and action contract](#observation-and-action
 
 ## Installation
 
-From PyPI:
+The package is not on PyPI yet. Install the `v0.2.0` release wheel — it is attached
+to the [GitHub release](https://github.com/zhao6663/chassis-sim/releases/tag/v0.2.0) —
+or work from a checkout:
 
 ```bash
-pip install chassis-sim
+pip install "chassis-sim[viz] @ https://github.com/zhao6663/chassis-sim/releases/download/v0.2.0/chassis_sim-0.2.0-py3-none-any.whl"
 ```
 
-This page documents the 0.2.0 line, and `v0.2.0` is the latest published tag, so
-the install above already gives you everything described here — extras included,
-e.g. `pip install "chassis-sim[viz]"`. The 0.1.x line is the migration case: it
-still has the old 494-value observation and the old single-config sensor API, so
-pin `pip install "chassis-sim<0.2"` only if you actually need those.
+Drop the `[viz]` suffix for a core install, or use `[planning]` for the Hybrid-A*
+map generator. The 0.1.x line (tag `v0.1.4`) is the migration case: it still has
+the old 494-value observation and the old single-config sensor API.
 
 From a checkout, with the development tools:
 
