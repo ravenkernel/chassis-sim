@@ -28,12 +28,14 @@ LiDAR → 车体 → 终点 → HUD。
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+
+from chassis_sim.protocols import Bridge
 
 from .scene import (
     Scene,
@@ -743,7 +745,7 @@ def _draw_zoom_inset(
 
 
 # ── 读数（全部走公开方法，拿不到就给 None）────────────────────────
-def _read_odometry(bridge: object) -> np.ndarray | None:
+def _read_odometry(bridge: Bridge) -> np.ndarray | None:
     """`get_odometry()` 的只读快照；不可用 / 形状不符时返回 None。"""
     getter = getattr(bridge, "get_odometry", None)
     if not callable(getter):
@@ -755,7 +757,7 @@ def _read_odometry(bridge: object) -> np.ndarray | None:
     return odom if odom.size >= 5 else None
 
 
-def _read_sim_time(bridge: object) -> float | None:
+def _read_sim_time(bridge: Bridge) -> float | None:
     """`sim_time`（属性或方法）的只读快照；拿不到返回 None。"""
     value = getattr(bridge, "sim_time", None)
     if callable(value):
@@ -769,7 +771,7 @@ def _read_sim_time(bridge: object) -> float | None:
     return number if math.isfinite(number) else None
 
 
-def _chassis_label(bridge: object) -> str | None:
+def _chassis_label(bridge: Bridge) -> str | None:
     """底盘名（`chassis.name`，退化到类名）。"""
     chassis = getattr(bridge, "chassis", None)
     if chassis is None:
@@ -780,7 +782,7 @@ def _chassis_label(bridge: object) -> str | None:
     return type(chassis).__name__
 
 
-def _bridge_telemetry(bridge: object, scene: Scene) -> dict[str, Any]:
+def _bridge_telemetry(bridge: Bridge, scene: Scene) -> dict[str, Any]:
     """HUD 读数：odometry 的 v / ω、sim_time 推的 t 与 step、真实激光回波给的 d_min。
 
     d_min 取前后雷达最近的真实回波；桥没有激光能力时留空（HUD 显示「—」）——
@@ -807,45 +809,37 @@ def _bridge_telemetry(bridge: object, scene: Scene) -> dict[str, Any]:
     return telemetry
 
 
-def _read_scan(bridge: object, side: str) -> np.ndarray | None:
-    """单侧真实扫描：优先 get_scan(side)（饱和读数报 +inf），其次 get_lidar_front()。
+def _lidar_scans(bridge: Bridge) -> list[tuple[int, np.ndarray, Any]]:
+    """[(安装位编号, 真实距离数组, scan_meta)]；桥没有雷达读数时是空列表。
 
-    返回 None 表示这条数据通路不存在或读失败——渲染层据此一条光束都不画。
+    雷达数据只有一条通路：bridge.get_sensor_reading() 里带 "scan" 键的条目
+    （1.0.0 起 SensorProvider 只剩 get_sensor_reading 这一个雷达入口）。
+    安装位编号 = 该条目在读数里的出现顺序，与 chassis.lidar_mounts() 的顺序一致；
+    条目自带的 scan_meta 若有 mount / angle_min / angle_increment，优先用它们。
+    返回 None 语义不存在：缺帧（scan 为 None）的传感器压根不出现 ⇒ 零光束。
     """
-    reader = getattr(bridge, "get_scan", None)
-    if callable(reader):
-        try:
-            payload = reader(side)
-        except (AttributeError, TypeError, ValueError):
-            payload = None
-        if isinstance(payload, dict) and payload.get("ranges") is not None:
-            scan = np.asarray(payload["ranges"], dtype=np.float64).reshape(-1)
-            if scan.size:
-                return scan
-    getter = getattr(bridge, "get_lidar_" + side, None)
+    getter = getattr(bridge, "get_sensor_reading", None)
     if not callable(getter):
-        return None
+        return []
     try:
-        raw = getter()
+        reading = getter()
     except (AttributeError, TypeError, ValueError):
-        return None
-    # 返回 None / 标量说明这条数据通路没有扫描数据，不能当成一帧 nan 射线
-    if raw is None or np.ndim(raw) == 0:
-        return None
-    try:
-        scan = np.asarray(raw, dtype=np.float64).reshape(-1)
-    except (AttributeError, TypeError, ValueError):
-        return None
-    return scan if scan.size else None
-
-
-def _lidar_scans(bridge: object) -> list[tuple[int, np.ndarray]]:
-    """[(雷达安装位编号, 真实距离数组)]；桥没有激光能力时是空列表。"""
-    scans: list[tuple[int, np.ndarray]] = []
-    for mount_index, side in ((0, "front"), (1, "rear")):
-        scan = _read_scan(bridge, side)
-        if scan is not None:
-            scans.append((mount_index, scan))
+        return []
+    scans: list[tuple[int, np.ndarray, Any]] = []
+    for item in (reading or {}).values():
+        if not isinstance(item, Mapping) or item.get("scan") is None:
+            continue
+        raw = item["scan"]
+        # 标量说明这条数据通路没有扫描数据，不能当成一帧 nan 射线
+        if np.ndim(raw) == 0:
+            continue
+        try:
+            scan = np.asarray(raw, dtype=np.float64).reshape(-1)
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if not scan.size:
+            continue
+        scans.append((len(scans), scan, item.get("scan_meta") or {}))
     return scans
 
 
@@ -855,10 +849,10 @@ def _ray_indices(size: int, count: int) -> np.ndarray:
     return np.unique(picks.astype(np.int64))
 
 
-def _lidar_min_range(bridge: object, scene: Scene) -> float | None:
+def _lidar_min_range(bridge: Bridge, scene: Scene) -> float | None:
     """最近的真实回波距离（米）；没有激光数据或全部饱和时给 None。"""
     best: float | None = None
-    for _mount, scan in _lidar_scans(bridge):
+    for _mount, scan, _meta in _lidar_scans(bridge):
         finite = scan[np.isfinite(scan) & (scan > 0.0)]
         if finite.size == 0:
             continue
@@ -869,16 +863,53 @@ def _lidar_min_range(bridge: object, scene: Scene) -> float | None:
     return best
 
 
+def _meta_mount(meta: Any, mounts: tuple[Any, ...], index: int) -> tuple:
+    """该传感器的安装位姿 (x, y, yaw)：scan_meta.mount 优先，其次底盘安装表。"""
+    if isinstance(meta, Mapping):
+        mount = meta.get("mount")
+        if mount is not None:
+            try:
+                if len(mount) >= 3:
+                    return (float(mount[0]), float(mount[1]), float(mount[2]))
+            except (TypeError, ValueError):
+                pass
+    if index < len(mounts):
+        off_x, off_y, angle_off = mounts[index]
+        return (float(off_x), float(off_y), float(angle_off))
+    return (0.0, 0.0, 0.0)
+
+
+def _meta_angles(theta: float, size: int, meta: Any, angle_off: float) -> np.ndarray:
+    """该帧每根射线的世界系方位角（弧度）。
+
+    scan_meta 给全 angle_min / angle_increment 时按 angle_min + i * increment 还原；
+    否则退回历史公式：安装朝向 - pi/2 起、铺满 pi。
+    """
+    if isinstance(meta, Mapping):
+        angle_min = meta.get("angle_min")
+        increment = meta.get("angle_increment")
+        if angle_min is not None and increment is not None:
+            try:
+                return (
+                    theta
+                    + float(angle_min)
+                    + np.arange(size, dtype=np.float64) * float(increment)
+                )
+            except (TypeError, ValueError):
+                pass
+    return theta + angle_off - math.pi / 2.0 + np.linspace(0.0, math.pi, size)
+
+
 def _collect_lidar_rays(
-    bridge: object, scene: Scene, *, max_rays: int = _MAX_LIDAR_RAYS
+    bridge: Bridge, scene: Scene, *, max_rays: int = _MAX_LIDAR_RAYS
 ) -> np.ndarray:
     """把真实扫描等间隔抽样成 (M, 4) 线段 [x0, y0, x1, y1]，长度 = 该射线真实距离。
 
-    抽样是总数为上限：前后雷达同时存在时各一半（默认 36）。数据全部来自桥自己的
-    求交结果：get_scan(side) 用 +inf 表示无回波，get_lidar_front() / get_lidar_rear()
-    给出含饱和值的距离。无回波整条丢弃，绝不把「没打到」画成「打到很远」；桥没有
-    任何激光能力时返回空数组，渲染层据此零光束。LiDAR 安装位姿与扫描角度公式和
-    SimpleBridge._simulate_lidar 保持一致。
+    抽样是总数为上限：多支雷达同时存在时均分（默认 36）。数据全部来自
+    bridge.get_sensor_reading() 的 lidar 条目，无回波（非有限值 / <=0）整条丢弃，
+    绝不把「没打到」画成「打到很远」；桥没有任何雷达读数时返回空数组，渲染层据此
+    零光束。每条射线的方位角用该传感器 scan_meta 自带的 angle_min + i *
+    angle_increment（缺元数据时退回「安装朝向 - pi/2 起、铺满 pi」的历史公式）。
     """
     scans = _lidar_scans(bridge)
     if not scans or max_rays <= 0:
@@ -887,18 +918,18 @@ def _collect_lidar_rays(
     x, y, theta = scene.pose
     cos_t = math.cos(theta)
     sin_t = math.sin(theta)
+    mounts = tuple(scene.lidar_mounts or ())
     chunks: list[np.ndarray] = []
-    for mount_index, scan in scans:
+    for mount_index, scan, meta in scans:
         usable = np.flatnonzero(np.isfinite(scan) & (scan > 0.0))
         if usable.size == 0:
             continue
         indices = usable[_ray_indices(usable.size, per_scan)]
-        off_x, off_y, angle_off = scene.lidar_mounts[mount_index]
+        mount = _meta_mount(meta, mounts, mount_index)
+        off_x, off_y, angle_off = mount
         origin_x = x + off_x * cos_t - off_y * sin_t
-        origin_y = y + off_x * sin_t + off_y * cos_t
-        angles = (
-            theta + angle_off - math.pi / 2.0 + np.linspace(0.0, math.pi, scan.size)
-        )
+        origin_y = y + off_y * cos_t + off_x * sin_t
+        angles = _meta_angles(theta, scan.size, meta, angle_off)
         dist = np.minimum(scan[indices], scene.max_range)
         chunks.append(
             np.column_stack(
@@ -977,7 +1008,7 @@ def render_scene(
 
 
 def render_frame(
-    bridge: object,
+    bridge: Bridge,
     ax: Any = None,
     *,
     show_lidar: bool = False,
@@ -1033,7 +1064,7 @@ def save_figure(fig: Any, path: str | Path, *, dpi: float | None = None) -> Path
 
 
 def render_to_png(
-    bridge: object, path: str | Path, *, dpi: float = _DEFAULT_DPI, **kwargs: Any
+    bridge: Bridge, path: str | Path, *, dpi: float = _DEFAULT_DPI, **kwargs: Any
 ) -> Path:
     """渲染桥的当前状态并写成 PNG，返回文件路径（父目录自动创建）。"""
     fig = render_frame(bridge, dpi=dpi, **kwargs)
@@ -1041,7 +1072,7 @@ def render_to_png(
 
 
 def render_episode_frames(
-    bridge: object,
+    bridge: Bridge,
     actions: Sequence[np.ndarray],
     out_dir: str | Path,
     *,

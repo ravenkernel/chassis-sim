@@ -225,7 +225,7 @@ class ScenarioResetOptionsFactory:
     本回调把生成推迟到**每个回合**：
 
         factory = scenario_reset_options_factory("obstacles_dense", base_seed=0)
-        result = evaluate(env_factory, controller, n_episodes=10, reset_options=factory)
+        result = evaluate(env_factory, controller, episodes=10, reset_options=factory)
         # 回合 i 的地图 = MapGenerator(default_rng(base_seed + i))
 
     core 场景（`straight` / `waypoints`，障碍与路径写死在 YAML 里）**没有**随机

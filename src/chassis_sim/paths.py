@@ -1,32 +1,231 @@
-"""时间序（索引增大方向）局部路径提取 — 训练与 Nav2 部署共用。
+"""路径工具、几何判定与路径提取 —— 1.0 公共路径 `chassis_sim.paths`。
 
-取代旧的"前方过滤"（``path[path[:,0] > -0.5]``）——后者会丢弃机器人身后的
-有效倒车航点。本模块从最近航点出发、**恒定沿索引增大方向**（nearest→goal）
-走，与机器人朝向、车速符号都无关，然后变换到车身系并降采样。
+本模块收拢 1.0 之前分散在 `chassis_sim.envs` 下的三处私有深路径：
 
-为什么恒定沿索引增大方向（B3 修复，2026-10-05）:
-    参考路径的索引是**时间序**——索引 0 是任务起点，N-1 是终点，车辆沿索引
-    增大方向完成任务（``envs/ackermann_env.py`` 的 ``target_idx`` 单向推进，
-    注释明确写"无论前进还是倒车，车辆总是沿着索引增大方向"）。
-    因此"接下来要走的路"永远是 nearest→goal。
-    路径第 2 列存的是**车头朝向（nose，RS 积分所得）而非运动方向**
-    （见 ``envs/ackermann_env.py`` 的 heading_error_local 注释、
-    ``envs/map_generator.py`` 里 "Keep as-is — downstream consumers expect
-    nose direction"）：倒车段上 ``path[i+1,:2] - path[i,:2]``（运动方向）与
-    ``path[i,2]``（鼻向）点积为负。按速度符号切换提取方向会把这一几何事实
-    误当成"路径要反着走"，导致：
-      1. 中段倒车时输出整体翻 180°（把"已走过的路"当成"前方的路"，
-         实测 dx<0 比例 0.10→1.00）；
-      2. 起点附近倒车时 nearest→start 无点可取，提取段塌成 1–3 个真点，
-         ``last_n_valid`` 从 30 掉到 1–3（path_valid 1.00→0.03），
-         策略执行正确倒车的第一步就把主引导输入打崩。
+* `envs.path_utils`：`angle_wrap` / `np_angle_wrap` / `clip_path_to_bounds` /
+  `subsample_path` / `cartesian_to_polar` / `_arc_length`；
+* `envs.path_extractor.PathExtractor`；
+* `envs.chassis_env` 的档位几何判定：`segment_is_reverse` / `GEAR_EPS` /
+  `gear_is_compliant`。
+
+训练（env 观测）与部署（Nav2 控制器插件）都从这里导入，路径不再有包内私有深路径。
+
+角度工具
+--------
+`angle_wrap` 是标量版（math），`np_angle_wrap` 是矢量化版（numpy），二者都归一到
+[-pi, pi]。
 """
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
-from chassis_sim.envs.path_utils import np_angle_wrap, subsample_path
+
+def angle_wrap(a: float) -> float:
+    """角度归一化到 [-pi, pi]（标量，基于 math）。"""
+    return (a + math.pi) % (2 * math.pi) - math.pi
+
+
+def np_angle_wrap(a: np.ndarray | float) -> np.ndarray | float:
+    """角度归一化到 [-pi, pi]（矢量化，基于 numpy）。"""
+    return (a + np.pi) % (2 * np.pi) - np.pi
+
+
+def clip_path_to_bounds(
+    path: np.ndarray,
+    bounds: tuple[float, float, float, float] = (0.0, 10.0, 0.0, 10.0),
+    margin: float = 0.0,
+) -> np.ndarray:
+    """将路径点 (x, y) 位置裁剪到 *bounds* 范围内。
+
+    仅裁剪位置列（列 0 和列 1）；朝向（列 2）保持不变。
+    可选的 *margin* 从内侧收缩有效边界
+    （例如 ``margin=0.2`` 使点距离边缘 ≥ 0.2 m）。
+
+    Args:
+        path:   (N, 2|3) 路径点数组。
+        bounds: (x_min, x_max, y_min, y_max) 世界坐标。
+        margin: 每条边界向内收缩的距离（≥ 0）。
+
+    Returns:
+        *path* 的**副本**，位置已裁剪。若 *path* 仅 2 列则返回 (x, y)；
+        3+ 列时保留朝向。
+    """
+    x_min, x_max, y_min, y_max = bounds
+    x_min += margin
+    x_max -= margin
+    y_min += margin
+    y_max -= margin
+
+    clipped = path.copy()
+    clipped[:, 0] = np.clip(clipped[:, 0], x_min, x_max)
+    clipped[:, 1] = np.clip(clipped[:, 1], y_min, y_max)
+    return clipped
+
+
+def subsample_path(
+    path: np.ndarray,
+    target_count: int,
+    power: float = 1.0,
+) -> np.ndarray:
+    n_in = len(path)
+    if n_in <= target_count:
+        return path.copy()
+
+    # ── 1. 预处理：剔除距离极小的冗余点 (Numerical Stability) ────
+    # 这一步能防止后面 searchsorted 和除零风险
+    dist_sq = np.sum(np.diff(path[:, :2], axis=0) ** 2, axis=1)
+    mask = np.concatenate([[True], dist_sq > 1e-6])
+    path = path[mask]
+    n_in = len(path)
+    if n_in < 2:
+        return np.tile(path[0:1], (target_count, 1))
+
+    # ── 2. 累积弧长 (保持原逻辑) ──────────────────────────────────
+    xy = path[:, :2]
+    diffs = np.diff(xy, axis=0)
+    seg_lens = np.hypot(diffs[:, 0], diffs[:, 1])
+    cumlen = np.concatenate([[0.0], np.cumsum(seg_lens)])
+    total = cumlen[-1]
+
+    # ── 3. 采样计算 ──────────────────────────────────────────────
+    fractions = (np.arange(target_count) / max(target_count - 1, 1)) ** power
+    sample_dists = fractions * total
+
+    has_theta = path.shape[1] >= 3
+    out_dim = 3 if has_theta else 2
+    result = np.empty((target_count, out_dim), dtype=path.dtype)
+
+    # 向量化寻找线段索引 (替代 for 循环内的 searchsorted)
+    # searchsorted 也可以向量化，效率更高
+    indices = np.searchsorted(cumlen, sample_dists) - 1
+    indices = np.clip(indices, 0, n_in - 2)
+
+    for i in range(target_count):
+        idx = indices[i]
+        d = sample_dists[i]
+
+        # 避免除零，虽然预处理了冗余点，但为了稳健性保留 epsilon
+        seg_dist = max(seg_lens[idx], 1e-9)
+        t = (d - cumlen[idx]) / seg_dist
+        t = np.clip(t, 0.0, 1.0)
+
+        # 位置插值
+        result[i, :2] = path[idx, :2] + t * diffs[idx]
+
+        # 朝向插值
+        if has_theta:
+            t0 = path[idx, 2]
+            t1 = path[idx + 1, 2]
+            dtheta = np_angle_wrap(t1 - t0)
+            result[i, 2] = np_angle_wrap(t0 + t * dtheta)
+
+    # 确保首尾锚点完全对齐
+    result[0] = path[0, :out_dim]
+    result[-1] = path[-1, :out_dim]
+
+    return result
+
+
+def cartesian_to_polar(body_path: np.ndarray) -> np.ndarray:
+    """Convert body-frame [dx, dy, dtheta] to polar [rho, sin_phi, cos_phi, dtheta].
+
+    Args:
+        body_path: (N, 3) float32 array with columns [dx, dy, dtheta] in body frame.
+                   dx, dy in metres; dtheta in radians, wrapped to [-pi, pi].
+
+    Returns:
+        (N, 4) float32 array with columns [rho, sin_phi, cos_phi, dtheta].
+        rho in metres; sin_phi, cos_phi dimensionless in [-1, 1];
+        dtheta in radians (raw, no normalisation applied).
+
+    2026-10-28 删除第 5 列 ddtheta：它是 dtheta 的**一阶差分**，零独立信息
+    （Conv1d 在相邻 dθ 上本来就能学到同一个量），却占了整条观测的 30 维。
+    dtheta 自身已由调用方 wrap 到 [-π, π]（PathExtractor._world_to_body 用
+    np_angle_wrap），所以这里不再需要任何 wrap 逻辑。
+    """
+
+    dx = body_path[:, 0]
+    dy = body_path[:, 1]
+    rho = np.hypot(dx, dy)
+    eps = 1e-8
+    sin_phi = dy / np.maximum(rho, eps)
+    cos_phi = dx / np.maximum(rho, eps)
+    dtheta = body_path[:, 2]
+    return np.column_stack([rho, sin_phi, cos_phi, dtheta])
+
+
+def _arc_length(path: np.ndarray) -> float:
+    """Compute cumulative arc length along a path of [x, y, ...] waypoints.
+
+    Args:
+        path: (N, 2+) array of waypoints.
+
+    Returns:
+        Total arc length in metres. Returns 0.0 for paths with < 2 points.
+    """
+    if len(path) < 2:
+        return 0.0
+    diffs = np.diff(path[:, :2], axis=0)
+    return float(np.sum(np.hypot(diffs[:, 0], diffs[:, 1])))
+
+
+def segment_is_reverse(
+    path_body: np.ndarray,
+    nearest_idx: int,
+    heading_error_local: float,
+    prev_dir: float = 1.0,
+) -> float:
+    """判定最近路径点所在段是"正着开"还是"倒着开" (2026-10-05)。
+
+    返回 +1（前进段）/ −1（倒车段）；路径点重合无法判定时返回 *prev_dir*。
+
+    **为什么必须是几何判定**：`path_body[:, 2]` 存的是**鼻向**（RS 积分，
+    nose direction），而路径点之间的位置差给出的是**运动方向**。两者点积 < 0
+    ⇔ 这一段要求倒车。
+
+    旧实现 `1.0 if abs(heading_error_local) < π/2 else -1.0` 是错的：
+    `heading_error_local` 正是"路径鼻向 − 车头朝向"，**正确跟踪时前进段与
+    倒车段都 ≈ 0** ⇒ path_dir 恒为 +1，导致倒车段的 progress 符号翻转永不生效、
+    传给 reward 的 path_dir 也失去意义。
+
+    用**中心差分**取运动方向：比单边差抗噪，且天然处理路径两端。
+    """
+    n = len(path_body)
+    if n < 2:
+        return prev_dir
+    i0 = max(0, nearest_idx - 1)
+    i1 = min(n - 1, nearest_idx + 1)
+    mdx = float(path_body[i1, 0] - path_body[i0, 0])
+    mdy = float(path_body[i1, 1] - path_body[i0, 1])
+    if float(np.hypot(mdx, mdy)) <= 1e-6:
+        return prev_dir  # 路径点重合，沿用上次判定
+    nx, ny = float(np.cos(heading_error_local)), float(np.sin(heading_error_local))
+    return 1.0 if (mdx * nx + mdy * ny) >= 0.0 else -1.0
+
+
+# 判定"车是否在动"的速度阈值（m/s）。低于它视为原地转向/静止，
+# 不参与档位合规判定（否则原地掉头的瞬间会被误判成"反向前进"）。
+GEAR_EPS = 0.01
+
+
+def gear_is_compliant(path_dir: float, v: float, eps: float = GEAR_EPS) -> bool:
+    """路径段规定的档位与车辆实际档位是否一致 (2026-10-05)。
+
+    路径第 2 列是**鼻向**，所以倒车段（`path_dir < 0`）要求车头背对运动方向
+    ⇒ 车辆必须以 **v < 0** 前进才能同时满足"沿路径推进"与"车头对齐路径鼻向"。
+    前进段则要求 v ≥ 0。
+
+    为什么需要它：`arc_progress` 是**位置势能**（沿路径的弧长推进），
+    **方向无关** —— 反向前进与正确倒车拿到完全相同的进度分。
+    实测 run025 在倒车段上 82~90% 的步是**反向前进**（stage4 82.0%、
+    stage5 89.5%），即"掉头正着开"骗过了位置势能。此函数用于把那部分补贴掐掉。
+    """
+    if path_dir < 0:
+        return v < -eps  # 要求倒车 ⇒ 必须真的在倒
+    return v >= -eps  # 要求前进 ⇒ 不得倒车（v≈0 的原地转向不受罚）
 
 
 class PathExtractor:
@@ -108,8 +307,6 @@ class PathExtractor:
         #     避免直线外推污染 PathEncoder 输入。
         #     恒取 nearest→goal（不是 start→nearest）：路径为时间序，倒车段
         #     同样沿索引增大方向推进，剩余里程与 velocity 符号无关。
-        from .path_utils import _arc_length
-
         remaining = _arc_length(path_world[nearest_idx:])
         effective_lookahead = min(
             self._lookahead, max(remaining * 1.2, self._lookahead_floor)

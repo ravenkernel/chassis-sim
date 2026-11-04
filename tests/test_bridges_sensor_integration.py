@@ -2,8 +2,8 @@
 
 四条硬约束各有一组断言：
 
-1. 传感器**不动**旧雷达接口：加不加传感器，get_lidar_front / get_lidar_rear /
-   get_scan 与 get_odometry 的返回值逐位相同。
+1. 传感器**不动**其它读数：加不加传感器，get_odometry 的返回值逐位相同；
+   雷达帧只经 get_sensor_reading 的 lidar 条目交付。
 2. 传感器**不消耗**全局 np.random：domain_rand=True 时开关传感器，LiDAR 与里程计
    序列 max|Δ| = 0。
 3. 几何由桥注入：两支不同 mount 的 LiDAR 在同一场景下测距不同，且 scan_meta 的
@@ -108,7 +108,8 @@ def test_reading_keys_are_sensor_names_in_spec_order() -> None:
 # ═════════════════════════════════════════════════════════════════════
 
 
-def test_sensors_do_not_change_legacy_lidar_interfaces() -> None:
+def test_sensors_do_not_change_other_interfaces() -> None:
+    """装配传感器不改变其它读数：odometry 逐位相同；无传感器时读数是 None。"""
     plain = _make_bridge(None)
     loaded = _make_bridge(_stock_specs())
     _reset(plain)
@@ -116,40 +117,31 @@ def test_sensors_do_not_change_legacy_lidar_interfaces() -> None:
     for action in _ACTIONS:
         plain.step(action)
         loaded.step(action)
-        assert np.array_equal(plain.get_lidar_front(), loaded.get_lidar_front())
-        assert np.array_equal(plain.get_lidar_rear(), loaded.get_lidar_rear())
-        for side in ("front", "rear"):
-            a = plain.get_scan(side)
-            b = loaded.get_scan(side)
-            assert np.array_equal(a["ranges"], b["ranges"])
-            assert a["angle_min"] == b["angle_min"]
-            assert a["frame_id"] == b["frame_id"]
         assert np.array_equal(plain.get_odometry(), loaded.get_odometry())
+    assert plain.get_sensor_reading() is None
+    assert sorted(loaded.get_sensor_reading()) == ["front", "imu", "rear", "wheel"]
 
 
 def test_sensors_do_not_consume_global_np_random() -> None:
-    """domain_rand=True 时开关传感器，LiDAR 噪声与里程计漂移序列一个数都不许平移。"""
+    """domain_rand=True 时开关传感器，里程计漂移序列一个数都不许平移。"""
 
-    def run(sensors) -> tuple[np.ndarray, np.ndarray]:
+    def run(sensors, domain_rand: bool = True) -> np.ndarray:
         np.random.seed(12345)
-        bridge = _make_bridge(sensors, domain_rand=True)
+        bridge = _make_bridge(sensors, domain_rand=domain_rand)
         _reset(bridge)
-        lidars, odoms = [], []
+        odoms = []
         for action in _ACTIONS:
             bridge.step(action)
-            lidars.append(bridge.get_lidar_front())
             odoms.append(bridge.get_odometry())
-        return np.array(lidars), np.array(odoms)
+        return np.array(odoms)
 
-    lidar_a, odom_a = run(None)
-    lidar_b, odom_b = run(_stock_specs())
-    for name, x, y in (
-        ("lidar_front", lidar_a, lidar_b),
-        ("odometry", odom_a, odom_b),
-    ):
-        assert np.array_equal(x, y), f"{name} max|Δ| = {np.max(np.abs(x - y))}"
-    # 反向对照：domain_rand 本身确实带来了噪声（否则上面的相等可能是平凡成立）
-    assert np.max(np.abs(lidar_a - lidar_a[0])) > 0.0
+    odom_a = run(None)
+    odom_b = run(_stock_specs())
+    assert np.array_equal(odom_a, odom_b), (
+        f"odometry max|Δ| = {np.max(np.abs(odom_a - odom_b))}"
+    )
+    # 反向对照：domain_rand 本身确实带来了漂移（否则上面的相等可能是平凡成立）
+    assert not np.array_equal(odom_a, run(_stock_specs(), domain_rand=False))
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -173,26 +165,6 @@ def test_two_mounts_measure_differently_and_report_their_yaw() -> None:
     assert reading["rear"]["scan_meta"]["mount"] == pytest.approx(rear)
     assert reading["front"]["scan_meta"]["name"] == "front"
     assert reading["front"]["scan_meta"]["angle_max"] == pytest.approx(np.pi / 2.0)
-
-
-def test_sensor_lidar_matches_legacy_geometry_bit_for_bit() -> None:
-    """默认 spec + 底盘真实 mount ⇒ 与 get_lidar_front() / get_lidar_rear() 对拍。"""
-    front, rear = AckermannChassis().lidar_mounts()
-    plain = _make_bridge(None)
-    loaded = _make_bridge([Lidar("front", mount=front), Lidar("rear", mount=rear)])
-    _reset(plain)
-    _reset(loaded)
-    worst = 0.0
-    for action in _ACTIONS:
-        plain.step(action)
-        loaded.step(action)
-        reading = loaded.get_sensor_reading()
-        for name, legacy in (
-            ("front", plain.get_lidar_front()),
-            ("rear", plain.get_lidar_rear()),
-        ):
-            worst = max(worst, float(np.max(np.abs(reading[name]["scan"] - legacy))))
-    assert worst <= 1e-6, f"max|Δ| = {worst}"
 
 
 def test_scan_meta_keeps_legacy_keys_and_adds_name_mount() -> None:

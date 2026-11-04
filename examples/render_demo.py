@@ -11,6 +11,9 @@
     episode.gif        过程图每 10 帧取一张串成的 GIF（缺 imageio 时降级成帧目录）
 
 同时打印 60 帧全量耗时、单帧字节数、GIF 字节数。
+
+这里刻意用 chassis_sim.render 的画图原语（可控 hero / trail / zoom）：要“录一个
+回合”或“存一张静图”用一键入口 cs.record(env, ctrl, out=...) / cs.snapshot(env, path)。
 """
 
 from __future__ import annotations
@@ -22,9 +25,9 @@ from pathlib import Path
 
 import numpy as np
 
+import chassis_sim as cs
 from chassis_sim.bridges import SimpleBridge
 from chassis_sim.chassis import AckermannChassis
-from chassis_sim.controllers import PurePursuitController
 from chassis_sim.render import render_episode_frames, render_to_png, save_gif
 from chassis_sim.scenarios import load_scenario, scenario_to_reset_options
 
@@ -48,7 +51,8 @@ def _build() -> SimpleBridge:
 
 def _drive(bridge: SimpleBridge, steps: int) -> tuple[np.ndarray, np.ndarray]:
     """纯追踪闭环跑 steps 步，返回 (动作序列, 位姿序列)。"""
-    controller = PurePursuitController(
+    controller = cs.make_controller(
+        "pp",
         chassis=bridge.chassis,
         lookahead=0.55,
         speed_gain=0.9,

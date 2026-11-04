@@ -12,6 +12,7 @@ import pytest
 from chassis_sim.bridges import SimpleBridge
 from chassis_sim.chassis import AckermannChassis
 from chassis_sim.controllers import PurePursuitController
+from chassis_sim.sensors import Lidar
 
 PATH3 = np.array([[1.0, 5.0, 0.0], [5.0, 5.0, 0.0]])
 
@@ -27,7 +28,23 @@ CROSSING = {
 
 
 def _bridge(dynamics=None) -> SimpleBridge:
-    return SimpleBridge(AckermannChassis(), dynamic_obstacles=dynamics)
+    # 雷达只有 get_sensor_reading 一个入口 ⇒ 前/后两支 Lidar 必须显式装配
+    chassis = AckermannChassis()
+    front, rear = chassis.lidar_mounts()
+    return SimpleBridge(
+        chassis,
+        dynamic_obstacles=dynamics,
+        sensors=[
+            Lidar("front", mount=front, n_rays=180),
+            Lidar("rear", mount=rear, n_rays=180),
+        ],
+    )
+
+
+def _scan(bridge: SimpleBridge, name: str = "front") -> np.ndarray:
+    """传感器帧（float32 一维）；name 取 front / rear。"""
+    reading = bridge.get_sensor_reading()
+    return np.asarray(reading[name]["scan"], dtype=np.float32)
 
 
 def _reset(bridge: SimpleBridge) -> None:
@@ -170,8 +187,8 @@ def test_lidar_sees_dynamic_obstacle() -> None:
     _reset(dyn)
     _straight(dyn, 10)
 
-    d_base = base.get_lidar_front()
-    d_dyn = dyn.get_lidar_front()
+    d_base = _scan(base)
+    d_dyn = _scan(dyn)
     idx = int(np.argmin(d_dyn))
     assert d_dyn[idx] < d_base[idx] - 0.5, (idx, float(d_dyn[idx]), float(d_base[idx]))
     # 障碍在右前方 ⇒ 该射线方向约 -17°（车头为 0），不是正前方
@@ -187,7 +204,7 @@ def test_lidar_unchanged_when_dynamic_list_is_empty() -> None:
     _reset(b)
     _straight(a, 10)
     _straight(b, 10)
-    assert np.array_equal(a.get_lidar_front(), b.get_lidar_front())
+    assert np.array_equal(_scan(a), _scan(b))
 
 
 # ═════════════════════════ 确定性 ═════════════════════════
@@ -197,12 +214,12 @@ def test_reset_plus_fifty_steps_is_bitwise_reproducible() -> None:
     def run() -> tuple[np.ndarray, np.ndarray]:
         bridge = _bridge([CROSSING])
         _reset(bridge)
-        lidar = [bridge.get_lidar_front().copy(), bridge.get_lidar_rear().copy()]
+        lidar = [_scan(bridge).copy(), _scan(bridge, "rear").copy()]
         poses = []
         for _ in range(50):
             bridge.step(np.array([0.3, 1.0]))
-            lidar[0] = np.minimum(lidar[0], bridge.get_lidar_front())
-            lidar[1] = np.minimum(lidar[1], bridge.get_lidar_rear())
+            lidar[0] = np.minimum(lidar[0], _scan(bridge))
+            lidar[1] = np.minimum(lidar[1], _scan(bridge, "rear"))
             poses.append(bridge.get_odometry()[:3].copy())
         return np.concatenate(lidar), np.concatenate(poses)
 

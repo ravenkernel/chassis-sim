@@ -2,7 +2,7 @@
 # fmt: off
 """Programmatic training map generator with random obstacles and paths."""
 from __future__ import annotations
-from chassis_sim.envs.path_utils import np_angle_wrap
+from chassis_sim.paths import np_angle_wrap
 import numpy as np
 from chassis_sim.planning.rs_curve import reeds_shepp_path, reeds_shepp_path_pose  # noqa: E402
 

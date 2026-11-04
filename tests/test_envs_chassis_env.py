@@ -14,20 +14,60 @@ import sys
 import numpy as np
 import pytest
 
-from chassis_sim.chassis import make_chassis
-from chassis_sim.envs.chassis_env import (
-    ChassisSimEnv,
-    GearVoteLag,
-    gear_is_compliant,
-    segment_is_reverse,
+from chassis_sim.chassis import AckermannChassis, make_chassis
+from chassis_sim.config import EnvConfig, RewardConfig
+from chassis_sim.envs import ChassisSimEnv
+from chassis_sim.envs.chassis_env import GearVoteLag
+from chassis_sim.obs import (
+    Act,
+    Err,
+    Goal,
+    GoalSig,
+    LidarSegment,
+    ObsSpec,
+    Odom,
+    PathProgress,
+    PathSegment,
+    PathValid,
 )
-from chassis_sim.envs.config import EnvConfig, RewardConfig
-from chassis_sim.envs.observation import ObsLayout
+from chassis_sim.paths import gear_is_compliant, segment_is_reverse
+from chassis_sim.sensors import Lidar
 
 _DRL_SIM = "/home/zhao/drl-sim"
 CHASSIS_NAMES = ("ackermann", "diff_drive", "mecanum")
 # 默认观测 = 最小集 odom(4) + path(120) + goal(2) + act(action_dim)
 OBS_DIMS = {"ackermann": 128, "diff_drive": 128, "mecanum": 129}
+
+
+def _spec_494(act_dim: int = 2) -> ObsSpec:
+    """v0.1.4 的 9 段 494 维观测：1.0.0 起只能显式写，库不再内置 494。"""
+    return ObsSpec(
+        (
+            LidarSegment(
+                name="lidar",
+                sensors=("front", "rear"),
+                ray_counts={"front": 180, "rear": 180},
+            ),
+            Odom(),
+            PathSegment(points=30),
+            Goal(),
+            Act(action_dim=act_dim),
+            Err(),
+            GoalSig(),
+            PathValid(),
+            PathProgress(),
+        )
+    )
+
+
+def _lidars() -> list:
+    """前 180 + 后 180 两支 Lidar（mount 取底盘的真实安装位）。"""
+    front, rear = AckermannChassis().lidar_mounts()
+    return [
+        Lidar("front", mount=front, n_rays=180),
+        Lidar("rear", mount=rear, n_rays=180),
+    ]
+
 
 _OBSTACLES = [
     {"shape": {"name": "circle", "radius": 0.35}, "state": [4.5, 5.0, 0.0]},
@@ -105,8 +145,7 @@ def test_observation_space_matches_default_spec(env_factory):
         "goal": slice(124, 126),
         "act": slice(126, 129),
     }
-    # 494 是显式选择，不是默认值：ObservationBuilder 的旧布局仍独立存在
-    assert ObsLayout(action_dim=3).total_dim == 495
+    # 494 是显式选择，不是默认值（见 _spec_494 与 test_ackermann_parity_*）
 
 
 def test_rejects_mismatched_bridge(env_factory):
@@ -413,8 +452,10 @@ def _make_parity_pair(scene):
         reward_cfg=RewardConfig(),
         map_generator=scene,
         domain_rand=False,
-        # 对拍金标准是 v0.1.4 的 494 维原始观测 ⇒ 显式点名，而不是默认值
-        obs_spec=ObsLayout(action_dim=2, max_path_points=30).as_spec(),
+        # 对拍金标准是 v0.1.4 的 494 维原始观测 ⇒ 显式点名，而不是默认值；
+        # 雷达帧只能来自这两支 Lidar（旧的两键接口已删）
+        obs_spec=_spec_494(),
+        sensors=_lidars(),
     )
     return main, chip
 
@@ -427,7 +468,7 @@ def _parity_run(scene, actions):
         obs_chip, _ = chip.reset(seed=0)
         assert np.array_equal(obs_main, obs_chip), "reset 首帧观测应逐位相等"
 
-        layout = ObsLayout(action_dim=2, max_path_points=30)
+        describe = chip.obs_spec_describe()
 
         worst_obs = 0.0
         worst_reward = 0.0
@@ -455,8 +496,8 @@ def _parity_run(scene, actions):
             assert bool(trunc_main) == bool(trunc_chip), f"step {step} truncated"
 
             # act 段（prev_action 编码）是动作映射的直接证据：逐位相等
-            sm = layout.slice(np.asarray(obs_main, np.float32))["act"]
-            sc = layout.slice(np.asarray(obs_chip, np.float32))["act"]
+            sm = np.asarray(obs_main, np.float32)[describe["act"]]
+            sc = np.asarray(obs_chip, np.float32)[describe["act"]]
             if not np.array_equal(np.asarray(sm), np.asarray(sc)):
                 act_equal = False
 

@@ -22,7 +22,7 @@ os.environ.setdefault("OMP_NUM_THREADS", "1")
 import numpy as np
 import pytest
 
-from chassis_sim.envs.reward import RewardCalculator
+from chassis_sim.reward import RewardCalculator
 
 WEIGHTS = {
     "cte_penalty": 3.0,

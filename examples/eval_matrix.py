@@ -21,9 +21,9 @@ random 基线会真的撞上（否则碰撞率与 min_obstacle_clearance 两列�
 采样，其余控制器经 Controller.to_chassis_action 做车型逆映射，脚本里不出现
 ±1.2 / ±omega_max 这类物理界（diff_drive 的动作空间正在被并发改动）。
 
-控制器**必须**用评测 env 的那个底盘构造（`chassis=env.chassis`，下面用探针 env
-取），不许用 `make_chassis(kind)`：它的默认 v_max=1.0 / v_min=-1.0 与
-EnvConfig 的 1.2 / -0.6 不同源，to_chassis_action 按 1.0 归一化、
+控制器**必须**用评测 env 的那个底盘构造：这里统一走 `cs.make_controller(..., env=env)`
+（下面用探针 env 取），不许用 `make_chassis(kind)`：它的默认 v_max=1.0 /
+v_min=-1.0 与 EnvConfig 的 1.2 / -0.6 不同源，to_chassis_action 按 1.0 归一化、
 Chassis.command() 按 1.2 反解 ⇒ 请求 0.5 m/s 实跑 0.6 m/s（+20%）。
 `evaluate()` 会比对两侧 limits 并在不一致时抛 ValueError；每行还会打印
 `ROUNDTRIP_V` 的速度往返（请求 vs env 实际），作为「同标定」的实证。
@@ -38,8 +38,7 @@ from pathlib import Path
 
 import numpy as np
 
-from chassis_sim.controllers import DwaController, PurePursuitController
-from chassis_sim.envs import ChassisSimEnv
+import chassis_sim as cs
 from chassis_sim.eval import EvalResult, evaluate, to_markdown
 from chassis_sim.scenarios import scenario_reset_options_factory
 
@@ -75,15 +74,15 @@ class RandomController:
         return sample.astype(self.action_space.dtype)
 
 
-def _make_env(chassis: str) -> ChassisSimEnv:
-    return ChassisSimEnv(chassis, max_steps=MAX_STEPS)
+def _make_env(chassis: str) -> cs.ChassisSimEnv:
+    return cs.make(chassis, max_steps=MAX_STEPS)
 
 
-def _make_controller(name: str, env: ChassisSimEnv):
+def _make_controller(name: str, env: cs.ChassisSimEnv):
     if name == "pure_pursuit":
-        return PurePursuitController(chassis=env.chassis)
+        return cs.make_controller("pp", env=env)
     if name == "dwa":
-        return DwaController(chassis=env.chassis, dt=env.dt)
+        return cs.make_controller("dwa", env=env)
     if name == "random":
         return RandomController(env.action_space, seed=SEED)
     raise ValueError(f"未知控制器 {name!r}；支持 {list(CONTROLLERS)}")
@@ -133,7 +132,7 @@ def main() -> int:
             result = evaluate(
                 lambda chassis=chassis: _make_env(chassis),
                 controller,
-                n_episodes=N_EPISODES,
+                episodes=N_EPISODES,
                 seed=SEED,
                 max_steps=MAX_STEPS,
                 reset_options=factory,
@@ -177,7 +176,7 @@ def main() -> int:
     )
     payload = {
         "scenario": SCENARIO,
-        "n_episodes": N_EPISODES,
+        "episodes": N_EPISODES,
         "max_steps": MAX_STEPS,
         "seed": SEED,
         "elapsed_s": round(elapsed, 3),

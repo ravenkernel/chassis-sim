@@ -46,6 +46,9 @@ from typing import Any
 
 import numpy as np
 
+from chassis_sim.controllers import make_controller
+from chassis_sim.protocols import Bridge
+
 __all__ = [
     "Z95",
     "EpisodeMetrics",
@@ -277,6 +280,16 @@ class EvalResult:
             rows = [(self.controller, self.chassis, self)]
         return to_markdown(rows, title=title)
 
+    def markdown(self, *args: Any, **kwargs: Any) -> str:
+        """1.0 的默认入口：`res.markdown()` 渲染自己这一行。
+
+        `*args` / `**kwargs` 原样透传给 `to_markdown`，因此
+        `res.markdown(rows, title="...")` 与 `res.to_markdown(rows, title="...")`
+        逐字同结果；模块级 `chassis_sim.eval.to_markdown(rows)` 保留给只拿得到
+        结果序列、不持有单个 EvalResult 的自由函数场景（脚本拼多格表格）。
+        """
+        return self.to_markdown(*args, **kwargs)
+
 
 # ── 底盘一致性护栏：控制器必须与 env 的底盘同标定 ─────────────────────
 #
@@ -393,7 +406,7 @@ def controller_observation(env: Any) -> dict[str, Any]:
     归一化视图，控制器需要的是物理量。
     """
     unwrapped = getattr(env, "unwrapped", env)
-    bridge = getattr(unwrapped, "bridge", None)
+    bridge: Bridge | None = getattr(unwrapped, "bridge", None)
     if bridge is None or not hasattr(bridge, "get_odometry"):
         raise TypeError(
             "env 缺少 bridge.get_odometry()，无法给控制器提供世界位姿 "
@@ -557,11 +570,37 @@ def _episode_reset_options(
     return options
 
 
+def _is_env_instance(obj: Any) -> bool:
+    """有 reset 与 step 就当 env 实例（同时可调用的实例也先按实例判，见 evaluate）。"""
+    return callable(getattr(obj, "reset", None)) and callable(
+        getattr(obj, "step", None)
+    )
+
+
+def _default_controller(env: Any) -> Any:
+    """controller 省略时，用 env **自己的**底盘造一台 pure pursuit。
+
+    1.0 的招牌用法是 `evaluate(env, episodes=20)`：控制器必须与 env 同标定，
+    所以默认控制器只能按 env 的底盘构造（`_env_chassis` 与一致性护栏同源）。
+    """
+    chassis = _env_chassis(env)
+    if chassis is None:
+        raise TypeError(
+            "evaluate() 省略 controller 时要用 env 自己的底盘造一台 pure pursuit，"
+            "但这个 env 没有可用底盘（env.unwrapped.chassis / env.chassis 都取不到"
+            f"带 describe() 的对象），env 类型 {type(env).__name__}。\n"
+            "  两条可行动做法：\n"
+            "    1) 显式传控制器：evaluate(env, controller)\n"
+            '    2) 显式给底盘：make_controller("pp", chassis=env.unwrapped.chassis)'
+        )
+    return make_controller("pure_pursuit", chassis=chassis)
+
+
 def evaluate(
-    env_factory: Callable[[], Any] | Any,
-    controller: Any,
+    env: Any,
+    controller: Any = None,
     *,
-    n_episodes: int,
+    episodes: int,
     seed: int = 0,
     max_steps: int | None = None,
     reset_options: (
@@ -570,7 +609,7 @@ def evaluate(
     labels: tuple[str, str] | None = None,
     allow_mismatch: bool = False,
 ) -> EvalResult:
-    """跑 n_episodes 个回合并汇总成 EvalResult。
+    """跑 episodes 个回合并汇总成 EvalResult。
 
     回合 i 用 reset(seed=seed + i)（可复现：同一 seed 同一控制器 ⇒ 同一批种子）。
     每回合开始把 env 的世界系路径喂给 controller.set_path()，并 controller.reset()。
@@ -578,10 +617,19 @@ def evaluate(
     max_steps（此时未结束的回合记为 timeout）。
 
     Args:
-        env_factory: 无参可调用对象（每次调用返回**新** env，由本函数负责 close）
-            或一个现成的 env 实例（不会被 close）。
+        env: 现成的 env 实例（同时有 reset 与 step，1.0 的招牌用法
+            `evaluate(env, episodes=20)`——控制器省略即绑到这台 env 的底盘；
+            不会被 close），
+            或无参工厂（每次调用返回**新** env，由本函数负责 close）。
+            判定规则：**先看实例** —— 有 reset 与 step 就当实例（即使该对象同时
+            可调用）；没有 reset/step 的可调用对象才当工厂；两者都不是 ⇒ TypeError。
+            两条路径跑出的回合完全相同（同一 seed ⇒ 同一批 episode）。
         controller: 具备 act(observation: dict) 的对象；reset()/set_path() 可选。
-        n_episodes: 回合数，必须 > 0。
+            **省略（None）** 时等价于 `make_controller("pure_pursuit",
+            chassis=env 自己的底盘)` —— 招牌用法 `evaluate(env, episodes=20)`。
+            底盘取自 `env.unwrapped.chassis`（退 `env.chassis`）；两边都取不到
+            带 describe() 的底盘就抛 TypeError（消息给出两条可行动做法）。
+        episodes: 回合数，必须 > 0。
         seed: 起始种子；回合 i 用 seed + i。
         max_steps: 单回合步数上限（None = 只靠 env 自己的终止条件）。
         reset_options: 透传 env.reset(options=...)，两种形态：
@@ -603,11 +651,13 @@ def evaluate(
         EvalResult（含每回合明细、成功率与 Wilson 95% 区间）。
 
     Raises:
-        ValueError: n_episodes <= 0，或控制器与 env 底盘的车型/limits 不一致
+        TypeError: 第一个参数既不是 env 实例（没有 reset/step）也不是可调用工厂；
+            或 controller 省略、而 env 没有可用底盘（造不出默认控制器）。
+        ValueError: episodes <= 0，或控制器与 env 底盘的车型/limits 不一致
             （后者可用 allow_mismatch=True 跳过，此时改为打一条 [WARN][eval]）。
     """
-    if n_episodes <= 0:
-        raise ValueError(f"n_episodes 必须 > 0，实得 {n_episodes}")
+    if episodes <= 0:
+        raise ValueError(f"episodes 必须 > 0，实得 {episodes}")
 
     if reset_options is None:
         options_kind = RESET_NONE
@@ -615,32 +665,44 @@ def evaluate(
         options_kind = RESET_PER_EPISODE
     else:
         options_kind = RESET_FIXED
-        if int(n_episodes) > 1:
+        if int(episodes) > 1:
             _warn(
                 f"reset_options 是固定 {type(reset_options).__name__}："
-                f"{int(n_episodes)} 个回合跑的是**同一张地图**（回合 seed 只推进 "
+                f"{int(episodes)} 个回合跑的是**同一张地图**（回合 seed 只推进 "
                 "env 内部 RNG，不重掷地图）⇒ success_ci 只是该图上的重放方差，"
                 "不代表独立样本，不可用于控制器对比。要每回合一张独立地图请传 "
                 "callable(episode_index)（例："
                 "scenario_reset_options_factory('obstacles_dense', base_seed=0)）。"
             )
 
-    owns_env = callable(env_factory)
-    env = env_factory() if owns_env else env_factory
-    episodes: list[EpisodeMetrics] = []
+    # 实例优先：同时可调用的 env 也按实例跑，绝不在 callable 上猜。
+    if _is_env_instance(env):
+        owns_env = False
+    elif callable(env):
+        owns_env = True
+        env = env()
+    else:
+        raise TypeError(
+            "evaluate() 的第一个参数必须是 env 实例（同时有 reset 与 step）或无参 "
+            f"工厂（可调用、返回 env），实得 {type(env).__name__}"
+        )
+    metrics: list[EpisodeMetrics] = []
     try:
+        if controller is None:
+            # 放进 try 内：默认控制器要用 env 的底盘，env 由工厂造时同样负责 close。
+            controller = _default_controller(env)
         # 先校验再跑：跑完才发现标定不一致，等于把 10 个回合的假数字留在盘上。
         _check_controller_chassis(env, controller, allow_mismatch=allow_mismatch)
-        for i in range(int(n_episodes)):
+        for i in range(int(episodes)):
             options = _episode_reset_options(reset_options, i)
-            episodes.append(_run_episode(env, controller, seed + i, max_steps, options))
+            metrics.append(_run_episode(env, controller, seed + i, max_steps, options))
     finally:
         if owns_env and hasattr(env, "close"):
             env.close()
 
     controller_label, chassis_label = _labels(env, controller, labels)
     result = EvalResult(
-        episodes=tuple(episodes),
+        episodes=tuple(metrics),
         controller=controller_label,
         chassis=chassis_label,
         seed=int(seed),

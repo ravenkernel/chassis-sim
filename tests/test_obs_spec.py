@@ -3,8 +3,8 @@
 对应 dispatch 的 7 条验收：
 
 1. default 总宽 128（action_dim=2）/ 129（action_dim=3）；
-2. 与旧 ObsLayout（src/chassis_sim/envs/observation.py:35）逐位对拍：9 段同序
-   同宽 = 494 维，np.array_equal == True 且 max|Δ| == 0.0；
+2. 与**内联金标准**逐位对拍：9 段同序同宽 = 494 维（段序/宽度取自主仓实测），
+   np.array_equal == True 且 max|Δ| == 0.0；金标准是手写拼接，不 import 任何段实现；
 3. Custom 宽度不符 / 返回 2-D 抛 ValueError；
 4. describe() 切片连续、首尾相接、总和 == total_dim、键序 == 段序；
 5. 同名段构造期 ValueError；lidar 引用未知传感器时 resolved() ValueError；
@@ -19,7 +19,6 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from chassis_sim.envs.observation import ObsLayout
 from chassis_sim.obs import (
     Act,
     Custom,
@@ -30,13 +29,13 @@ from chassis_sim.obs import (
     ObsContext,
     ObsSpec,
     Odom,
-    Path,
     PathProgress,
+    PathSegment,
     PathValid,
     Segment,
 )
 
-# 旧 ObsLayout 的 lidar 分量 = concat(lidar_front, lidar_rear)，这里保证逐位可切
+# 金标准的 lidar 分量 = concat(front, rear)，这里保证逐位可切
 LIDAR_360 = np.linspace(-3.0, 3.0, 360, dtype=np.float32)
 PATH_FLAT = (np.arange(120, dtype=np.float32) - 60.0) / 8.0
 
@@ -62,11 +61,11 @@ def _ctx(**over) -> ObsContext:
 
 
 def _nine_segments() -> tuple:
-    """与旧 ObsLayout 同序同宽的 9 段（lidar 用 360 根射线）== 494 维。"""
+    """与金标准同序同宽的 9 段（lidar 用 360 根射线）== 494 维。"""
     return (
         LidarSegment(name="lidar", sensors=("lidar",), ray_counts={"lidar": 360}),
         Odom(),
-        Path(points=30),
+        PathSegment(points=30),
         Goal(),
         Act(action_dim=2),
         Err(),
@@ -76,18 +75,52 @@ def _nine_segments() -> tuple:
     )
 
 
-def _legacy_build(ctx: ObsContext) -> np.ndarray:
-    layout = ObsLayout(action_dim=2, max_path_points=30)
-    return layout.build(
-        ctx.lidar["lidar"],
-        ctx.odom_rel,
-        ctx.path_flat,
-        ctx.goal,
-        ctx.act,
-        ctx.err,
-        ctx.goal_sig,
-        np.array([ctx.path_valid], dtype=np.float32),
-        path_progress=ctx.path_progress,
+#: 主仓实测的段序与切片（1.0.0 的金标准；ObsLayout 已删，这组数是手抄的）
+GOLDEN_ORDER = (
+    "lidar",
+    "odom",
+    "path",
+    "goal",
+    "act",
+    "err",
+    "goal_sig",
+    "path_valid",
+    "path_progress",
+)
+GOLDEN_SLICES = {
+    "lidar": (0, 360),
+    "odom": (360, 364),
+    "path": (364, 484),
+    "goal": (484, 486),
+    "act": (486, 488),
+    "err": (488, 490),
+    "goal_sig": (490, 492),
+    "path_valid": (492, 493),
+    "path_progress": (493, 494),
+}
+GOLDEN_TOTAL = 494
+
+
+def _golden_494(ctx: ObsContext) -> np.ndarray:
+    """494 维的参考实现：按 GOLDEN_SLICES 手工拼接（与段类实现无关）。
+
+    段实现是否逐位正确因此是一个真问题，而不是自证。path_progress 的夹紧
+    （nan→0 / inf→1 / 越界裁到 [0,1]）也是从旧实现搬来的契约，这里照抄。
+    """
+    prog = np.asarray(ctx.path_progress, dtype=np.float32).ravel()
+    prog = np.clip(np.nan_to_num(prog, nan=0.0, posinf=1.0, neginf=0.0), 0.0, 1.0)
+    return np.concatenate(
+        [
+            np.asarray(ctx.lidar["lidar"], dtype=np.float32).ravel(),
+            np.asarray(ctx.odom_rel, dtype=np.float32).ravel(),
+            np.asarray(ctx.path_flat, dtype=np.float32).ravel(),
+            np.asarray(ctx.goal, dtype=np.float32).ravel(),
+            np.asarray(ctx.act, dtype=np.float32).ravel(),
+            np.asarray(ctx.err, dtype=np.float32).ravel(),
+            np.asarray(ctx.goal_sig, dtype=np.float32).ravel(),
+            np.asarray(ctx.path_valid, dtype=np.float32).ravel(),
+            prog,
+        ]
     )
 
 
@@ -125,35 +158,33 @@ def test_default_build_places_each_segment():
 
 
 # ── 验收 2：494 逐位对拍 ─────────────────────────────────
-def test_494_bit_exact_against_legacy_layout():
+def test_494_bit_exact_against_golden():
     ctx = _ctx()
     res = ObsSpec(_nine_segments()).resolved()
-    old = _legacy_build(ctx)
+    old = _golden_494(ctx)
     new = res.build(ctx)
-    layout = ObsLayout(action_dim=2, max_path_points=30)
 
-    assert old.shape == new.shape == (494,)
-    assert res.total_dim == layout.total_dim == 494
+    assert old.shape == new.shape == (GOLDEN_TOTAL,)
+    assert res.total_dim == GOLDEN_TOTAL
     assert np.array_equal(new, old) is True
     assert np.array_equal(new.view(np.uint32), old.view(np.uint32)) is True
     assert float(np.max(np.abs(new.astype(np.float64) - old.astype(np.float64)))) == 0.0
 
 
-def test_494_slices_match_legacy_order_and_bits():
+def test_494_slices_match_golden_order_and_bits():
     ctx = _ctx()
     res = ObsSpec(_nine_segments()).resolved()
-    layout = ObsLayout(action_dim=2, max_path_points=30)
-    old = _legacy_build(ctx)
+    old = _golden_494(ctx)
     new = res.build(ctx)
 
-    assert list(res.describe()) == list(layout.ORDER)
+    assert list(res.describe()) == list(GOLDEN_ORDER)
+    assert res.describe() == {k: slice(*v) for k, v in GOLDEN_SLICES.items()}
     for name, sl in res.describe().items():
-        assert (sl.start, sl.stop) == layout._slices[name]
+        assert (sl.start, sl.stop) == GOLDEN_SLICES[name]
         assert np.array_equal(new[sl], old[sl.start : sl.stop])
-        assert np.array_equal(new[sl], layout.slice(old)[name].reshape(-1))
 
 
-def test_front_rear_via_sensor_meta_also_matches_legacy():
+def test_front_rear_via_sensor_meta_also_matches_golden():
     ctx = _ctx()
     segs = list(_nine_segments())
     segs[0] = LidarSegment(
@@ -163,29 +194,14 @@ def test_front_rear_via_sensor_meta_also_matches_legacy():
         {"front": {"n_rays": 180}, "rear": {"n_rays": 180}}
     )
     assert res.describe()["lidar"] == slice(0, 360)
-    assert res.total_dim == 494
-    assert np.array_equal(res.build(ctx), _legacy_build(ctx)) is True
+    assert res.total_dim == GOLDEN_TOTAL
+    assert np.array_equal(res.build(ctx), _golden_494(ctx)) is True
 
 
-def test_path_progress_is_clipped_like_legacy():
-    layout = ObsLayout(action_dim=2, max_path_points=30)
+def test_path_progress_is_clipped_like_golden():
     for raw in (-0.5, 0.0, 0.375, 1.0, 2.0, float("nan")):
         ctx = _ctx(path_progress=raw)
-        seg = PathProgress()
-        assert np.array_equal(
-            seg.build(ctx),
-            layout.build(
-                ctx.lidar["lidar"],
-                ctx.odom_rel,
-                ctx.path_flat,
-                ctx.goal,
-                ctx.act,
-                ctx.err,
-                ctx.goal_sig,
-                np.array([ctx.path_valid], np.float32),
-                path_progress=raw,
-            )[-1:],
-        )
+        assert np.array_equal(PathProgress().build(ctx), _golden_494(ctx)[-1:])
 
 
 # ── 验收 3：Custom 契约 ─────────────────────────────────

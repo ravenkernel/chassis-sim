@@ -15,8 +15,8 @@ import numpy as np
 import pytest
 
 from chassis_sim.chassis import make_chassis
-from chassis_sim.envs.chassis_env import ChassisSimEnv
-from chassis_sim.envs.config import EnvConfig
+from chassis_sim.config import EnvConfig
+from chassis_sim.envs import ChassisSimEnv
 
 V_MAX = 1.2
 OMEGA_MAX = 0.8

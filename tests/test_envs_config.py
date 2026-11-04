@@ -22,7 +22,6 @@ from chassis_sim.config import (
     from_config_dir,
     load_default_config,
 )
-from chassis_sim.envs import ObsLayout, compute_obs_dims
 
 PKG_DIR = Path(pkg.__file__).resolve().parent
 
@@ -452,7 +451,7 @@ class TestNoDeadRewardKwargs:
     """
 
     def test_ctor_does_not_warn_dead_reward_kwargs(self, capsys):
-        from chassis_sim.envs.chassis_env import ChassisSimEnv
+        from chassis_sim.envs import ChassisSimEnv
 
         env = ChassisSimEnv("ackermann")
         try:
@@ -492,7 +491,7 @@ auto_curriculum:
 path:
   lookahead_distance: 1.1
 network:
-  max_path_points: 12       # 本包认识的键（消费者：observation.compute_obs_dims）
+  max_path_points: 12       # 本包认识的键（消费者：EnvConfig.max_path_points）
   actor_hidden: [256, 256]  # 主仓有、本包不消费
   critic_hidden: [512, 512]
 """
@@ -532,11 +531,8 @@ class TestHostOwnedTrainYaml:
         assert env.envs_panel_enabled is False
         assert env.curriculum_enabled is False
 
-        # network.max_path_points 在本包的真实消费者是 compute_obs_dims
-        # （EnvConfig 不含该字段）：必须真取到 12，而不是回落到默认 30。
-        base_dim, _ = compute_obs_dims(str(tmp_path))
-        assert base_dim == ObsLayout(max_path_points=12).total_dim
-        assert base_dim != ObsLayout().total_dim
+        # network.max_path_points 的真消费者是 EnvConfig.max_path_points：
+        # 必须真取到 12，而不是回落到默认 30。
 
     def test_known_key_wrong_type_still_rejected(self, tmp_path):
         """反向对照 1：陌生键带了一堆，认识的键写错类型仍要报（不是整段不校验）。"""

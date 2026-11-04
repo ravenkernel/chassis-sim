@@ -244,13 +244,13 @@ def _write_gif(frames: list[Path], target: Path) -> Path:
 
 def _make_clip(clip: Clip, out_dir: Path, plt: ModuleType) -> Made:
     """先跑一遍录下控制器动作，再 reset 回放渲染抽帧，最后合成 GIF。"""
-    from chassis_sim.envs import ChassisSimEnv
+    import chassis_sim as cs
     from chassis_sim.eval import controller_observation
     from chassis_sim.render import render_episode_frames
     from chassis_sim.scenarios import load_scenario, scenario_to_reset_options
 
     options = scenario_to_reset_options(load_scenario(clip.scenario), seed=SEED)
-    env = ChassisSimEnv(clip.chassis, max_steps=CLIP_STEPS)
+    env = cs.make(clip.chassis, max_steps=CLIP_STEPS)
     frame_dir = Path(tempfile.mkdtemp(prefix=f"chassis_sim_{clip.stem}_"))
     try:
         env.reset(seed=SEED, options=options)
@@ -333,12 +333,12 @@ def _draw_dynamic(bridge, ax) -> None:
 
 def _make_scene_png(name: str, out_dir: Path, plt: ModuleType, dpi: float) -> Made:
     """场景静图：ackermann 停在起点（reset 后不 step），带激光与缩放内嵌窗。"""
-    from chassis_sim.envs import ChassisSimEnv
+    import chassis_sim as cs
     from chassis_sim.render import render_frame, save_figure
     from chassis_sim.scenarios import load_scenario, scenario_to_reset_options
 
     options = scenario_to_reset_options(load_scenario(name), seed=SEED)
-    env = ChassisSimEnv("ackermann")
+    env = cs.make("ackermann")
     try:
         env.reset(seed=SEED, options=options)
         fig = render_frame(

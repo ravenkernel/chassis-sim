@@ -6,7 +6,8 @@
 2. 动作 → 物理量的映射由 Chassis.command() 负责，不再在 env 里写 δ/v 的
    if/else；阿克曼分支与主仓 ackermann_env.py:820-833 逐字等价。
 3. 不 import training.*（主仓 __init__ 里 from training.config import ...），
-   配置改用 chassis_sim.envs.config.EnvConfig / RewardConfig。
+   配置改用 chassis_sim.config.EnvConfig / RewardConfig（1.0.0 W1 起唯一家是
+    config/schema.py）。
 4. dt 形参真正生效（主仓的 dt 形参是死键，实际读 _ec.dt）。
 5. MapGenerationError 按类名鸭子类型判定，不 import chassis_sim.planning
    （core 安装没有 numba）。
@@ -38,10 +39,12 @@ from gymnasium import spaces
 
 from chassis_sim.bridges import SensorProvider, SimpleBridge
 from chassis_sim.chassis import Chassis, make_chassis
-from chassis_sim.envs.config import EnvConfig, RewardConfig
-from chassis_sim.envs.observation import ObservationBuilder, ObsLayout
-from chassis_sim.envs.reward import RewardCalculator
+from chassis_sim.config import EnvConfig, RewardConfig
+from chassis_sim.config.schema import _resolve
 from chassis_sim.obs import ObsSpec
+from chassis_sim.obs.context import ContextBuilder
+from chassis_sim.paths import gear_is_compliant, segment_is_reverse
+from chassis_sim.reward import RewardCalculator
 from chassis_sim.sensors import Imu, Lidar, WheelOdom
 
 # 零速判据：|v| 小于它时无法由 ω 反解转角（与 controllers/base.py 的 V_EPS 同值）
@@ -103,45 +106,6 @@ def _straight_scene() -> tuple[list, np.ndarray, float, float]:
     return [], path, 0.0, 0.0
 
 
-def segment_is_reverse(
-    path_body: np.ndarray,
-    nearest_idx: int,
-    heading_error_local: float,
-    prev_dir: float = 1.0,
-) -> float:
-    """判定最近路径点所在段是"正着开"还是"倒着开" (2026-10-05)。
-
-    返回 +1（前进段）/ −1（倒车段）；路径点重合无法判定时返回 *prev_dir*。
-
-    **为什么必须是几何判定**：`path_body[:, 2]` 存的是**鼻向**（RS 积分，
-    nose direction），而路径点之间的位置差给出的是**运动方向**。两者点积 < 0
-    ⇔ 这一段要求倒车。
-
-    旧实现 `1.0 if abs(heading_error_local) < π/2 else -1.0` 是错的：
-    `heading_error_local` 正是"路径鼻向 − 车头朝向"，**正确跟踪时前进段与
-    倒车段都 ≈ 0** ⇒ path_dir 恒为 +1，导致倒车段的 progress 符号翻转永不生效、
-    传给 reward 的 path_dir 也失去意义。
-
-    用**中心差分**取运动方向：比单边差抗噪，且天然处理路径两端。
-    """
-    n = len(path_body)
-    if n < 2:
-        return prev_dir
-    i0 = max(0, nearest_idx - 1)
-    i1 = min(n - 1, nearest_idx + 1)
-    mdx = float(path_body[i1, 0] - path_body[i0, 0])
-    mdy = float(path_body[i1, 1] - path_body[i0, 1])
-    if float(np.hypot(mdx, mdy)) <= 1e-6:
-        return prev_dir  # 路径点重合，沿用上次判定
-    nx, ny = float(np.cos(heading_error_local)), float(np.sin(heading_error_local))
-    return 1.0 if (mdx * nx + mdy * ny) >= 0.0 else -1.0
-
-
-# 判定"车是否在动"的速度阈值（m/s）。低于它视为原地转向/静止，
-# 不参与档位合规判定（否则原地掉头的瞬间会被误判成"反向前进"）。
-GEAR_EPS = 0.01
-
-
 class GearVoteLag:
     """档位投票滞后状态机 (2026-10-06)：需要连续 N 步同向才切换档位判定。
 
@@ -194,23 +158,6 @@ class GearVoteLag:
         return -1.0 if self._stable else 1.0
 
 
-def gear_is_compliant(path_dir: float, v: float, eps: float = GEAR_EPS) -> bool:
-    """路径段规定的档位与车辆实际档位是否一致 (2026-10-05)。
-
-    路径第 2 列是**鼻向**，所以倒车段（`path_dir < 0`）要求车头背对运动方向
-    ⇒ 车辆必须以 **v < 0** 前进才能同时满足"沿路径推进"与"车头对齐路径鼻向"。
-    前进段则要求 v ≥ 0。
-
-    为什么需要它：`arc_progress` 是**位置势能**（沿路径的弧长推进），
-    **方向无关** —— 反向前进与正确倒车拿到完全相同的进度分。
-    实测 run025 在倒车段上 82~90% 的步是**反向前进**（stage4 82.0%、
-    stage5 89.5%），即"掉头正着开"骗过了位置势能。此函数用于把那部分补贴掐掉。
-    """
-    if path_dir < 0:
-        return v < -eps  # 要求倒车 ⇒ 必须真的在倒
-    return v >= -eps  # 要求前进 ⇒ 不得倒车（v≈0 的原地转向不受罚）
-
-
 # ══════════════════════════════════════════════════════════════════════
 # RewardCalculator 参数签名校验 (P2-18)
 #
@@ -242,7 +189,7 @@ def reward_ctor_accepted_names() -> frozenset[str]:
     用源码扫描而不是手工白名单：reward.py 以后新增 kwargs.get 键时自动被
     认作"已接受"，不会误报。
     """
-    from chassis_sim.envs.reward import RewardCalculator
+    from chassis_sim.reward import RewardCalculator
 
     sig = inspect.signature(RewardCalculator.__init__)
     accepted = {
@@ -283,8 +230,8 @@ class ChassisSimEnv(gym.Env):
     （由 env 自己造的桥持有，每支一条独立随机流，seed 由 sensor_seed= 给；
     读数只经 info 曝光，除非 obs_spec 里的 lidar 段显式引用它）；obs_spec=
     决定观测怎么拼（None ⇒ ObsSpec.default()，即
-    odom+path+goal+act 的 128 维最小集；v0.1.4 的 494 维要显式传
-    ObsLayout(2, 30).as_spec()）。
+    odom+path+goal+act 的 128 维最小集；v0.1.4 的 494 维要显式传 9 段 ObsSpec，
+    其中 lidar 段引用已装配的两支 Lidar 传感器名）。
     """
 
     metadata: ClassVar[dict[str, list[str]]] = {"render_modes": ["human"]}
@@ -299,14 +246,16 @@ class ChassisSimEnv(gym.Env):
 
     def __init__(
         self,
-        chassis: Any = "ackermann",
+        chassis: Any = None,
         *,
         bridge: SensorProvider | None = None,
         sensors: Sequence[Lidar | Imu | WheelOdom] | None = None,
         dynamics: str | None = None,
         cfg: EnvConfig | None = None,
         reward_cfg: RewardConfig | None = None,
-        max_steps: int = 1000,
+        max_steps: int | None = None,
+        # 1.0 起 env 不持有 device：编码器早已移入 Actor，ContextBuilder 只算
+        # numpy。形参保留给外部训练脚本传参（它不再影响任何行为）。
         device: str = "cpu",
         map_generator=None,
         safety_gate=None,
@@ -314,19 +263,19 @@ class ChassisSimEnv(gym.Env):
         env_index: int = 0,
         status_board=None,
         dt: float | None = None,
-        path_lookahead: float = 20.0,
-        max_path_points: int = 30,
+        path_lookahead: float | None = None,
+        max_path_points: int | None = None,
         obs_spec: ObsSpec | None = None,
-        sensor_seed: int = 0,
-        path_power: float = 2.0,
-        extrapolate_path: bool = True,
-        path_fill_mode: str = "extrapolate",
-        path_lookahead_floor: float = 1.0,
+        sensor_seed: int | None = None,
+        path_power: float | None = None,
+        extrapolate_path: bool | None = None,
+        path_fill_mode: str | None = None,
+        path_lookahead_floor: float | None = None,
         reward_weights: dict | None = None,
         stage_index: int = -1,
         reward_kwargs_extra: dict | None = None,
         strict_reward_kwargs: bool = False,
-        emit_reward_components: bool = True,
+        emit_reward_components: bool | None = None,
         world_bounds: tuple[float, float, float, float] | None = None,
     ):
         super().__init__()
@@ -337,7 +286,10 @@ class ChassisSimEnv(gym.Env):
         # ── 车型（W4b）────────────────────────────────────────────────
         # cfg 只是车型参数的**输入口**：构造完成后一切物理口径以
         # chassis.describe() 为准，避免 env 与底盘各存一份参数而漂移。
-        self.chassis = _resolve_chassis(chassis, _ec)
+        # 形参 None = 没给 ⇒ 逐级回落 cfg 字段（api.make 与本构造器共用 _resolve）
+        self.chassis = _resolve_chassis(
+            _resolve(chassis, _ec.chassis, "ackermann"), _ec
+        )
         _desc = self.chassis.describe()
         self.chassis_name = str(_desc["name"])
         self.action_dim = int(self.chassis.action_dim)
@@ -364,19 +316,20 @@ class ChassisSimEnv(gym.Env):
         # 课程阶段索引（B6）：-1 = 未知。作为 reward stage_scale 的权威来源，
         # 即便 map_generator 为 None（无课程/评估环境）也能正确缩放终止惩罚。
         self._stage_index = int(stage_index) if stage_index is not None else -1
-        self.max_steps = max_steps
+        self.max_steps = int(_resolve(max_steps, _ec.max_steps, 1000))
         self.goal_threshold = _ec.goal_dist_threshold
         self._goal_end_wp_count = _ec.goal_end_wp_count
         self.path_deviation_limit = _ec.path_deviation_limit
         self._priv_enabled = _ec.privileged_enabled
-        self._max_path_points = max_path_points
-        self._path_power = path_power
+        self._max_path_points = int(_resolve(max_path_points, _ec.max_path_points, 30))
+        self._path_power = float(_resolve(path_power, _ec.path_power, 2.0))
         self._obstacles: list[dict] = []
         # 当前生效的动态障碍规格（空 = 无）；切回静态场景时用于显式清空。
         self._dynamic_obstacles: list[dict] = []
         # dt 真生效（主仓 __init__ 的 dt 形参是死键，实际读 _ec.dt）：桥与
         # step 必须共用同一个 dt，所以先于桥构造赋值。
-        self.dt = float(dt) if dt is not None else float(_ec.dt)
+        # 三级优先级保留：dt kwarg > cfg.dt > dataclass 默认（cfg.dt 恒有值）
+        self.dt = float(_resolve(dt, _ec.dt))
         self._last_delta = 0.0  # 零速时 δ 无法由 ω 反解，沿用上一拍
 
         # ── 动力学三级开关（2026-11-04，语义见 envs/dynamics.py）──────────
@@ -450,12 +403,13 @@ class ChassisSimEnv(gym.Env):
             )
         # env 自造桥时记下传感器声明：只为给 obs_spec 的 lidar 段补 n_rays
         # （注入 bridge= 的路径上 sensors= 会被下面拒绝，这里存的是空元组）
+        sensors = _resolve(sensors, _ec.sensors, None)
         self._sensor_specs: tuple[Any, ...] = () if sensors is None else tuple(sensors)
         # 每个 lidar 名最后一次**有效**扫描（S3b 零阶保持）：丢帧 / latency 预热
         # 期用它顶上，绝不谎报"四周空旷"。只存真实读数，reset 时清空。
         self._lidar_last_scan: dict[str, np.ndarray] = {}
         if bridge is None:
-            _wbounds = _DEFAULT_WORLD_BOUNDS if world_bounds is None else world_bounds
+            _wbounds = _resolve(world_bounds, _ec.world_bounds, _DEFAULT_WORLD_BOUNDS)
             bridge = SimpleBridge(
                 self.chassis,
                 dt=self.dt,
@@ -469,7 +423,7 @@ class ChassisSimEnv(gym.Env):
                 goal_end_wp_count=int(_ec.goal_end_wp_count),
                 goal_end_wp_margin=int(_ec.goal_end_wp_margin),
                 sensors=sensors,
-                sensor_seed=int(sensor_seed),
+                sensor_seed=int(_resolve(sensor_seed, _ec.sensor_seed, 0)),
             )
         elif sensors is not None:
             # sensors= 与注入 bridge= **互斥**（这里选择抛错而不是"事后转交"）：
@@ -523,7 +477,7 @@ class ChassisSimEnv(gym.Env):
         # "env 侧看起来活着、实际被 **kwargs 吞掉"的假接线。构造前用
         # reward_kwargs_not_accepted() 按**真实签名 + kwargs.get 扫描**校验。
         # 0.1.1：删掉 11 个从未被 RewardCalculator 消费的键（原 WARN 的 12 个减去
-        # path_d_max —— 它另有 ObservationBuilder 的显式通路，见下方 P2-19）：
+        # path_d_max —— 它另有观测侧的显式通路，见下方 P2-19）：
         # reverse_step_penalty / alive_bonus / curvature_scale / heading_alpha
         # 来自旧 RewardConfig；speed_gate_threshold / path_d_scale /
         # progress_gate_threshold / progress_gate_mode 是本文件里的字面量；
@@ -621,30 +575,40 @@ class ChassisSimEnv(gym.Env):
         #   False ⇒ 1539 B/条 vs 改前 2884 B/条（−47%），1e6 条 ≈ −1.28 GB；
         #   参照：obs 494×float32 才 1976 B/条。
         # 生产训练建议置 False（需 S3 把 EnvConfig/train.yaml/env_factory 接上）。
-        self._emit_reward_components = bool(emit_reward_components)
+        # cfg 字段与 kwarg 同一解析链：cfg=False 曾经是死键（永远被形参默认 True 盖住）
+        self._emit_reward_components = bool(
+            _resolve(emit_reward_components, _ec.emit_reward_components, True)
+        )
 
-        # ObservationBuilder — 组装原始传感器数据（编码器已移入 Actor）
+        # ContextBuilder — raw 传感器字典 → ObsContext（编码器已移入 Actor）
         # 【P2-19 接线】path_d_max 是 CTE 的**观测归一化除数**（err 分量第 0 维
         # cte/path_d_max，clip 到 ±1），从 RewardConfig 转发；getattr 兜底兼容
         # 没有该字段的旧 RewardConfig。0.1.1：它**不是**奖励参数（RewardCalculator
         # 从不消费）⇒ 只从 _rw_kwargs 摘掉，字段 / YAML 键 / 本行一律保留。
-        self.obs_builder = ObservationBuilder(
-            device=device,
+        self._ctx_builder = ContextBuilder(
             max_path_points=self._max_path_points,
             path_power=self._path_power,
-            lookahead=path_lookahead,
+            lookahead=float(_resolve(path_lookahead, _ec.path_lookahead, 20.0)),
             v_max=self.v_max,
             v_min=self.v_min,
             delta_max=self.delta_max,
             path_d_max=getattr(_rc, "path_d_max", 4.0),
-            extrapolate_path=extrapolate_path,
-            path_fill_mode=path_fill_mode,
-            path_lookahead_floor=path_lookahead_floor,
+            extrapolate_path=bool(
+                _resolve(extrapolate_path, _ec.extrapolate_path, True)
+            ),
+            path_fill_mode=str(
+                _resolve(path_fill_mode, _ec.path_fill_mode, "extrapolate")
+            ),
+            path_lookahead_floor=float(
+                _resolve(path_lookahead_floor, _ec.path_lookahead_floor, 1.0)
+            ),
         )
 
         # Observation: 段布局完全由 ObsSpec 决定（0.2.0），Critic 的 privileged
         # 尾部仍追加在整条向量最末（因此不影响 spec 内部的切片）。
         priv_dim = _ec.privileged_bins if _ec.privileged_enabled else 0
+        if obs_spec is None:
+            obs_spec = _ec.obs_spec
         if obs_spec is None:
             # 默认最小集 odom+path+goal+act ⇒ 128 维（麦轮 act 3 维 ⇒ 129）。
             obs_spec = ObsSpec.default(
@@ -753,7 +717,7 @@ class ChassisSimEnv(gym.Env):
             self._pending_curriculum = None
 
         self._step_count = 0
-        self.obs_builder.reset()  # 清除时序 path 上下文
+        self._ctx_builder.reset()  # 清除时序 path 上下文
         self._prev_action = np.zeros(self.action_dim, dtype=np.float32)
         self._last_delta = 0.0
         self._target_idx = 0
@@ -973,8 +937,11 @@ class ChassisSimEnv(gym.Env):
         safety_brake = False
         if self._safety_gate is not None:
             delta = self._steer_from(v, omega)
-            lidar_360 = np.concatenate(
-                [self.bridge.get_lidar_front(), self.bridge.get_lidar_rear()]
+            _frames = self._lidar_frames()
+            lidar_360 = (
+                np.concatenate([_frames[k] for k in sorted(_frames)])
+                if _frames
+                else None
             )
             gated = self._safety_gate(np.array([delta, v], dtype=np.float64), lidar_360)
             v = float(gated[1])
@@ -1009,14 +976,14 @@ class ChassisSimEnv(gym.Env):
         path_progress: float | np.ndarray = 0.0,
     ) -> np.ndarray:
         """raw → ObsContext → obs_spec → 扁平 float32（不含 privileged 尾部）。"""
-        ctx = self.obs_builder.build_context(
+        ctx = self._ctx_builder.build_context(
             raw,
             prev_delta=prev_delta,
             prev_v=prev_v,
             err_signals=err_signals,
             goal_signals=goal_signals,
             path_progress=path_progress,
-            extra_lidar=self._extra_lidar(),
+            lidar=self._lidar_frames(),
         )
         ctx.act = self._act_vector(ctx.act)
         return self._obs_resolved.build(ctx)
@@ -1024,8 +991,7 @@ class ChassisSimEnv(gym.Env):
     def _act_vector(self, base: np.ndarray) -> np.ndarray:
         """按 obs_spec 的 act 段宽裁剪/扩展归一化动作。
 
-        ObservationBuilder 只算得出 2 维（[转向标度, v]；它内部的 ObsLayout 把
-        action_dim 写死为 2），3 维车型的第 3 维（横移标度
+        ContextBuilder 只算得出 2 维（[转向标度, v]），3 维车型的第 3 维（横移标度
         _prev_action[2]/vy_max）在这里补齐 —— 补在 act 段**末尾**，与 v0.1.4
         的 _with_chassis_acts（0.2.0 已删）是同一个位置、同一个值（495 维因此逐位不变）。
         act 段宽 ≤ 2 时按宽度截断（spec 明确只要前几维）。
@@ -1042,7 +1008,7 @@ class ChassisSimEnv(gym.Env):
         fill = np.full(width - base.size, vy_norm, dtype=base.dtype)
         return np.concatenate([base, fill])
 
-    def _extra_lidar(self) -> dict[str, np.ndarray]:
+    def _lidar_frames(self) -> dict[str, np.ndarray]:
         """传感器套件里 Lidar 的当帧读数（名字 → ranges），供 lidar 段引用。
 
         只收带 "scan" 键的读数（Imu / WheelOdom 的读数没有它）。缺帧（丢帧或
@@ -1107,17 +1073,14 @@ class ChassisSimEnv(gym.Env):
         return dict(getter() or {})
 
     def _sensor_meta(self) -> dict[str, dict[str, int]]:
-        """lidar 段补射线数用的元数据：legacy 前/后向 + env 自带套件的 lidar 名。
+        """lidar 段补射线数用的元数据：每支已装配 Lidar 的名字 → n_rays。
 
-        legacy 两键恒为 ObsLayout.LIDAR/2 = 180 线（bridge.get_lidar_front/rear
-        的契约宽度）。注入 bridge= 时 env 看不到桥里套件的声明，那种用法下
-        spec 里引用套件雷达就必须自给 ray_counts（否则 resolved() 会点名报错）。
+        1.0.0 起没有任何隐式"前/后两键"：
+        雷达帧只来自 bridge.get_sensor_reading()，所以这里的键集就是"真实装配的
+        雷达"。注入 bridge= 时 env 看不到桥里套件的声明，那种用法下 spec 引用
+        套件雷达就必须自给 ray_counts（否则 resolved() 会点名报错）。
         """
-        half = ObsLayout.LIDAR // 2
-        meta: dict[str, dict[str, int]] = {
-            "legacy_front": {"n_rays": half},
-            "legacy_rear": {"n_rays": half},
-        }
+        meta: dict[str, dict[str, int]] = {}
         for spec in self._lidar_specs():
             meta[str(spec.name)] = {"n_rays": int(spec.n_rays)}
         return meta
@@ -1126,8 +1089,8 @@ class ChassisSimEnv(gym.Env):
         """env 能看到的全部 Lidar spec：构造器给的 + 桥内套件自带的（若有）。
 
         注入 bridge= 时 env 拿不到套件声明，只能鸭子类型读桥里的
-        _sensors.specs（SensorSuite 的属性）；读不到就只剩 legacy 两键，
-        那种用法下引用套件雷达必须自己写 ray_counts。
+        _sensors.specs（SensorSuite 的属性）；读不到就是空集，那种用法下
+        引用套件雷达必须自己写 ray_counts。
         """
         candidates: list[Any] = list(self._sensor_specs)
         suite = getattr(self.bridge, "_sensors", None)
@@ -1466,7 +1429,7 @@ class ChassisSimEnv(gym.Env):
         _dists = np.hypot(path_body[:, 0], path_body[:, 1]) if n_pts > 0 else None
 
         # ── CTE 和 heading error（基于最近路径点）──
-        # 在 build() 之前计算，作为 err_signals 传入避免 ObservationBuilder
+        # 在 build() 之前计算，作为 err_signals 传入避免观测上下文构建器
         # 内部用 PathExtractor 子采样路径重复计算（两者使用不同路径表示）
         if n_pts > 0:
             dists = _dists
@@ -1475,7 +1438,7 @@ class ChassisSimEnv(gym.Env):
             tangent = float(path_body[nearest_idx, 2])
             cte = -nx * np.sin(tangent) + ny * np.cos(tangent)
             heading_error = tangent
-            cte_norm = np.clip(cte / self.obs_builder.path_d_max, -1.0, 1.0)
+            cte_norm = np.clip(cte / self._ctx_builder.path_d_max, -1.0, 1.0)
             err_signals = np.array([cte_norm, heading_error], dtype=np.float32)
 
             # heading_error_local = 路径鼻向 − 车头朝向。
@@ -1515,7 +1478,7 @@ class ChassisSimEnv(gym.Env):
             err_signals = np.array([0.0, 0.0], dtype=np.float32)
 
         # ── Goal signals（终点方向预判，传入 observation）──────
-        # 在 obs_builder.build() 前计算，让 actor 感知终点方位。
+        # 在 _build_obs() 前计算，让 actor 感知终点方位。
         # goal_heading_error: 车头指向与终点方向的偏差（sin/cos 两维）
         # 【2026-10-28 删第 3 维】1/(goal_dist+0.5) 是终点距离的确定性函数，
         # 零独立信息，已删除（GOAL_SIG 3→2）。
@@ -1638,8 +1601,13 @@ class ChassisSimEnv(gym.Env):
             arc_progress = 0.0  # 无路径时不更新弧位置 (v5)
             _cte_win = None  # 无路径 ⇒ 偏离判定回退到旧口径（P2-17）
 
-        d_min = float(np.min(raw["lidar_front"]))
-        d_min = min(d_min, float(np.min(raw["lidar_rear"])))
+        # d_min = 所有已装配雷达当帧读数的最小值；一支雷达都没有时取桥的量程
+        # （"四周无回波"），绝不拿几何估计冒充读数。
+        _lidar_now = self._lidar_frames()
+        if _lidar_now:
+            d_min = float(min(np.min(f) for f in _lidar_now.values()))
+        else:
+            d_min = float(getattr(self.bridge, "max_range", 0.0) or 0.0)
 
         v = float(raw["odometry"][3])
         reverse_triggered = v < -0.01
@@ -1884,9 +1852,8 @@ class ChassisSimEnv(gym.Env):
         return obs_np, reward, terminated, truncated, info
 
     def _get_raw_obs(self) -> dict:
+        """桥的原始读数（雷达帧**不**在这里：它走 _lidar_frames()）。"""
         return {
-            "lidar_front": self.bridge.get_lidar_front(),
-            "lidar_rear": self.bridge.get_lidar_rear(),
             "odometry": self.bridge.get_odometry(),
             "path": self.bridge.get_path(),  # body frame，供 waypoint 推进使用
             "path_world": self.bridge.get_path_global(),  # world frame，供 PathExtractor 使用

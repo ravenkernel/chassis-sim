@@ -2,17 +2,19 @@
 
 运行：/home/zhao/anaconda3/envs/drl2/bin/python examples/sensors_demo.py
 
-传感器只写进 info、不进 obs（0.2.0 起默认观测是最小集，与开不开传感器无关）：
-本脚本直接读 bridge 的 get_sensor_reading()，env 路径等价于 info["imu"] /
-info["wheel"] / info["scan"]（每支传感器一个键，读数字典里再分 scan/scan_meta）。
-要让某支雷达真的进 obs，得用 obs_spec 的 lidar 段显式引用它 —— 见
-tests/test_envs_obs_spec.py::TestSensorReadingsInObs。
+传感器只写进 info、不进 obs（默认观测是 odom+path+goal+act，与开不开传感器无关）：
+本脚本直接读 bridge 的 get_sensor_reading() —— 1.0.0 里它是激光数据的唯一入口
+（按传感器名索引的 dict）。env 侧是同一份字典，键就是传感器名：
+info["scan"] = {"scan", "scan_meta"}、info["imu"] = {"ax", ...}、
+info["wheel"] = {"v_left", ...}；不配传感器时 info 里没有任何传感器键。
+要让某支雷达真的进 obs，得用 ObsSpec 的 LidarSegment 显式引用它。
 """
 
 from __future__ import annotations
 
 import numpy as np
 
+import chassis_sim as cs
 from chassis_sim.bridges import SimpleBridge
 from chassis_sim.chassis import AckermannChassis
 from chassis_sim.sensors import Imu, Lidar, WheelOdom
@@ -91,6 +93,26 @@ def main() -> None:
             f"dropped={reading['scan']['scan_meta']['dropped']} "
             f"v={reading['wheel']['v']:+.6f}"
         )
+
+    print()
+    print("=== env 侧同一份读数：info[传感器名] ===")
+    env = cs.make(
+        "ackermann",
+        max_steps=3,
+        sensors=[Lidar("scan", n_rays=36, max_range=5.0)],
+        seed=2026,
+    )
+    env.reset(seed=0)
+    obs, reward, terminated, truncated, info = env.step(np.zeros(2, dtype=np.float32))
+    print("info 里的传感器键:", [key for key in sorted(info) if key == "scan"])
+    print(
+        "scan:",
+        info["scan"]["scan"].shape,
+        info["scan"]["scan"].dtype,
+        "valid:",
+        info["scan"]["scan_meta"]["valid"],
+    )
+    print("obs.shape:", obs.shape, "（传感器不进观测）")
 
 
 if __name__ == "__main__":

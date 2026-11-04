@@ -16,7 +16,7 @@
 
     # ② 每回合重掷地图（evaluate 的 n 才是 n 个独立样本）
     factory = scenario_reset_options_factory("obstacles_dense", base_seed=0)
-    result = evaluate(make_env, controller, n_episodes=10, reset_options=factory)
+    result = evaluate(make_env, controller, episodes=10, reset_options=factory)
 
 YAML schema（**硬契约**；任何偏离都抛 `ScenarioValidationError`，消息里必带
 文件路径与键名；未知键还会给出 `did you mean ...` 提示）::

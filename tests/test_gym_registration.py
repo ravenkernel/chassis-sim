@@ -56,11 +56,41 @@ def test_make_env_default_obs_dim(env_id, chassis):
 
 def test_make_env_forwards_obs_spec_kwarg():
     """gymnasium 把 make() 的多余关键字原样传给构造器 ⇒ 对象参数直接可用。"""
-    from chassis_sim.envs import ObsLayout
+    from chassis_sim import (
+        Act,
+        Err,
+        Goal,
+        GoalSig,
+        Lidar,
+        LidarSegment,
+        ObsSpec,
+        Odom,
+        PathProgress,
+        PathSegment,
+        PathValid,
+    )
 
+    spec = ObsSpec(
+        (
+            LidarSegment(
+                name="lidar",
+                sensors=("front", "rear"),
+                ray_counts={"front": 180, "rear": 180},
+            ),
+            Odom(),
+            PathSegment(points=30),
+            Goal(),
+            Act(action_dim=2),
+            Err(),
+            GoalSig(),
+            PathValid(),
+            PathProgress(),
+        )
+    )
     env = gym.make(
         "ChassisSim-Ackermann-v0",
-        obs_spec=ObsLayout(action_dim=2, max_path_points=30).as_spec(),
+        obs_spec=spec,
+        sensors=[Lidar("front", n_rays=180), Lidar("rear", n_rays=180)],
     )
     try:
         assert env.observation_space.shape == (494,)

@@ -1,9 +1,14 @@
-"""EnvConfig / RewardConfig —— env 层自带的配置 dataclass。
+"""EnvConfig / RewardConfig —— 本库唯一的配置 schema（原 envs/config.py）。
 
-从主仓 training/config.py 抽出 EnvConfig（原 760-807 行）与 RewardConfig
-（原 810-938 行）两个 dataclass，并把原先散落在 TrainingConfig.from_config_dir
-（原 976-1425 行）里的 env / reward 装配逻辑一并搬过来 —— 抽包后本库不再向
-上依赖 training/。
+2026-11-04（1.0.0 W1）从 chassis_sim/envs/config.py 搬到这里：chassis_sim/
+config/ 既是 package data（env.yaml / reward.yaml / curriculum.yaml）的家，
+也是 schema 的家 —— 配置只有这一个家，env 层不再另存一份。chassis_sim.config
+只做 re-export（见 __init__.py）。
+
+下面保留抽包时的迁移说明：从主仓 training/config.py 抽出 EnvConfig（原
+760-807 行）与 RewardConfig（原 810-938 行）两个 dataclass，并把原先散落在
+TrainingConfig.from_config_dir（原 976-1425 行）里的 env / reward 装配逻辑
+一并搬过来 —— 抽包后本库不再向 training/ 依赖。
 
 与主仓的三处有意差异：
 
@@ -26,12 +31,25 @@
 
 数值的唯一权威仍是 YAML；YAML 缺键时的兜底值一律取 dataclass 字段默认值
 （不写字面量），以免出现"第三套默认值"（主仓 P2-13 的教训）。
+
+## YAML 快照（EnvConfig.to_yaml / EnvConfig.from_yaml）
+
+to_yaml() 写的是**一次运行的可复现快照**：全部 EnvConfig 字段 + sensors /
+obs_spec 的可重建描述（每个传感器、每个观测段一个 dict，带 type 标签）。
+from_yaml() 读回后按 dataclass 相等可以往返（obs_spec 用逐段结构比较，因为
+ObsSpec 本身没有 __eq__）。
+
+它**不是** DSL，也不是 env.yaml / reward.yaml 的替代品：
+  · 只覆盖 EnvConfig 的字段（奖励权重仍在 RewardConfig / reward.yaml）；
+  · 不是手写训练配置的输入格式：没有继承、插值、组合、命令行覆盖；
+  · Custom 段带 callable，表达不了 ⇒ to_yaml() 直接报错，不静默丢弃。
 """
 
 from __future__ import annotations
 
 import importlib.resources
-from dataclasses import dataclass, field
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
@@ -60,7 +78,10 @@ class EnvConfig:
     privileged_enabled: bool = False
     privileged_bins: int = 36
     privileged_range: float = 5.0
-    domain_rand_enabled: bool = True
+    # 域随机化的 cfg 级开关。1.0.0 起库默认**确定性**（False）：不加噪是默认，
+    # 要随机化必须显式打开。api.make() 把它当作 domain_rand 的 cfg 级来源
+    # （kwargs > cfg > False），因此 env 侧不再有"隐式开噪"的第二条路径。
+    domain_rand_enabled: bool = False
     # ── 域随机化强度（主仓 2026-10-05 接线）──────────────────────────────
     # 这三个值在 NumpySimBridge / SimBridge 的构造器里一直存在，但**所有**
     # create_bridge 调用点都只传 domain_rand(bool)，从没传过它们；
@@ -98,6 +119,115 @@ class EnvConfig:
     v_deadband: float = 0.0  # m/s，|v_cmd| 低于此值输出归零（0 = 关，仅 wheel 档）
     wheel_slip: float = 0.0  # 轮滑系数 ∈[0,1)，地速 = 轮速×(1−slip)（0 = 关，仅 wheel）
 
+    # ── 行为参数（1.0.0 W1 收敛，2026-11-04）─────────────────────────────
+    # 这些字段原先只住在 ChassisSimEnv.__init__ 的形参里（形参默认值即库默
+    # 认），现在收进 EnvConfig：构造器形参默认一律 None，解析顺序统一为
+    # "显式 kwarg > 本 dataclass 字段 > 库默认"（见模块级 _resolve）。
+    #
+    # 对象型字段的 None 不是"缺省值占位"，而是有语义的推导指令：
+    #   · sensors=None      → 桥不装配传感器（SimpleBridge 既有的无传感器路径）
+    #   · obs_spec=None     → ObsSpec.default(action_dim, max_path_points)，
+    #                         action_dim 按车型推导 ⇒ 128/128/129 维不变
+    #   · world_bounds=None → envs.chassis_env._DEFAULT_WORLD_BOUNDS
+    #   · scenario=None     → 不加载场景（make() 只读调用 scenarios loader）
+    chassis: str = "ackermann"
+    sensors: tuple[Any, ...] | None = None
+    obs_spec: Any | None = None
+    scenario: str | None = None
+    max_steps: int = 1000
+    path_lookahead: float = 20.0
+    max_path_points: int = 30
+    path_power: float = 2.0
+    extrapolate_path: bool = True
+    path_fill_mode: str = "extrapolate"
+    path_lookahead_floor: float = 1.0
+    sensor_seed: int = 0
+    world_bounds: tuple[float, float, float, float] | None = None
+
+    def __post_init__(self) -> None:
+        """把 list 形态的容器规整成 dataclass 声明的 tuple 形态。
+
+        只做容器规范化（list → tuple），**不**校验取值范围 —— 那归载荷方
+        （make_chassis / SimpleBridge / ObsSpec）负责，这里再校验一次就等于
+        把同一套规则拆成三处。
+        """
+        if self.sensors is not None:
+            self.sensors = tuple(self.sensors)
+        if self.world_bounds is not None:
+            self.world_bounds = tuple(float(x) for x in self.world_bounds)
+
+    def to_yaml(self, path: str | Path) -> Path:
+        """写一份可重建的 YAML 快照（**不是** DSL，见模块 docstring）。
+
+        sensors / obs_spec 序列化成"类型标签 + 该类型字段"的 dict 列表，
+        from_yaml() 据此重建等价对象。返回写入的路径。
+        """
+        target = Path(path)
+        target.write_text(
+            yaml.safe_dump(self._snapshot(), sort_keys=False, allow_unicode=True),
+            encoding="utf-8",
+        )
+        return target
+
+    def _snapshot(self) -> dict[str, Any]:
+        """逐字段的可写视图：只有 sensors / obs_spec / world_bounds 需要转换。"""
+        data: dict[str, Any] = {}
+        for f in fields(self):
+            value = getattr(self, f.name)
+            if f.name == "obs_spec" and value is not None:
+                value = {"segments": [_describe_segment(s) for s in value.segments]}
+            elif f.name == "sensors" and value is not None:
+                value = [_describe_sensor(s) for s in value]
+            elif f.name == "world_bounds" and value is not None:
+                value = [float(x) for x in value]
+            data[f.name] = value
+        return data
+
+    @classmethod
+    def from_yaml(cls, path: str | Path) -> EnvConfig:
+        """读回 to_yaml() 的快照；未知键直接 ValueError（不静默忽略）。"""
+        from chassis_sim.obs.spec import ObsSpec
+
+        target = Path(path)
+        raw = yaml.safe_load(target.read_text(encoding="utf-8"))
+        if not isinstance(raw, Mapping):
+            raise TypeError(
+                f"{target}: 快照根节点应为 mapping，得到 {type(raw).__name__}"
+            )
+        known = {f.name for f in fields(cls)}
+        unknown = sorted(set(raw) - known)
+        if unknown:
+            raise ValueError(
+                f"{target}: 未知配置键 {unknown}；EnvConfig 只有 {len(known)} 个字段"
+            )
+        kwargs = dict(raw)
+        if kwargs.get("sensors") is not None:
+            kwargs["sensors"] = tuple(_build_sensor(d) for d in kwargs["sensors"])
+        spec = kwargs.get("obs_spec")
+        if spec is not None:
+            _reject_extra_keys(spec, ("segments",), f"{target}: obs_spec")
+            kwargs["obs_spec"] = ObsSpec([_build_segment(d) for d in spec["segments"]])
+        return cls(**kwargs)
+
+    def __eq__(self, other: object) -> bool:
+        """dataclass 相等 + obs_spec 的结构相等。
+
+        ObsSpec / Segment 没有 __eq__（对象档只能按 id 比），默认的 dataclass
+        比较会让 to_yaml → from_yaml 的往返**永远不等**。这里只把 obs_spec
+        换成逐段键后比较，其余字段仍是逐字段 ==。
+        """
+        if other.__class__ is not self.__class__:
+            return NotImplemented
+        for f in fields(self):
+            mine = getattr(self, f.name)
+            theirs = getattr(other, f.name)
+            if f.name == "obs_spec":
+                if _spec_key(mine) != _spec_key(theirs):
+                    return False
+            elif mine != theirs:
+                return False
+        return True
+
     @classmethod
     def from_config_dir(cls, config_dir: str | Path) -> EnvConfig:
         """只取 env 侧的一半（见模块级 from_config_dir）。"""
@@ -113,7 +243,7 @@ class RewardConfig:
     在构造期打一条 [WARN][env]：alive_bonus / reverse_step_penalty /
     curvature_scale / heading_alpha。（同批告警的另 8 个键从来不在本 dataclass：
     4 个是 chassis_env.py 里写死的字面量，3 个曾是 EnvConfig 的字段、已一并删除，
-    path_d_max 则**保留**——它另有 ObservationBuilder 这条活通路。）
+    path_d_max 则**保留**——它另有观测侧的活通路。）
     告警护栏本身**保留**（将来再加死键仍会 warn），见
     tests/test_envs_config.py::TestNoDeadRewardKwargs。
     """
@@ -146,7 +276,7 @@ class RewardConfig:
     dense_scale: float = 1.0
     # CTE 的**观测归一化除数**（err 分量第 0 维 = clip(cte/path_d_max, ±1)）。
     # ⚠ 它不是奖励参数（RewardCalculator 从不消费），但 env 侧确实把它转发给
-    # ObservationBuilder（chassis_env.py 的 path_d_max=）⇒ 0.1.1 保留本字段与
+    # 观测上下文构建器（chassis_env.py 的 path_d_max=）⇒ 0.1.1 保留本字段与
     # reward.yaml 的键，只把它从 _rw_kwargs（奖励 kwargs）里摘掉。
     path_d_max: float = 4.0
     cte_range: float = 4.0
@@ -532,7 +662,9 @@ def _build_env_config(train_raw: dict, reward_raw: dict, env_raw: dict) -> EnvCo
     privileged_range = float(_f(train_raw, 5.0, "privileged.max_range"))
 
     # ── Domain rand（噪声强度也必须真实读取，否则"改 YAML 无效"）──
-    domain_rand_enabled = bool(_f(train_raw, True, "domain_rand.enabled"))
+    # 缺键时落到 EnvConfig 的库默认 False（确定性优先）：否则
+    # load_default_config() 与 EnvConfig() 会在 domain_rand_enabled 上分叉。
+    domain_rand_enabled = bool(_f(train_raw, False, "domain_rand.enabled"))
     lidar_noise_std = float(_f(train_raw, 0.03, "domain_rand.lidar_noise_std"))
     odom_drift_xy = float(_f(train_raw, 0.01, "domain_rand.odom_drift_xy"))
     odom_drift_theta = float(_f(train_raw, 0.005, "domain_rand.odom_drift_theta"))
@@ -777,3 +909,176 @@ def load_default_config() -> tuple[EnvConfig, RewardConfig]:
     pkg = importlib.resources.files("chassis_sim.config")
     with importlib.resources.as_file(pkg) as config_dir:
         return from_config_dir(config_dir)
+
+
+# ── 参数解析：统一的三级优先级 ─────────────────────────────────────────
+_UNSET = object()
+
+
+def _resolve(kwarg: Any, cfg_value: Any, default: Any = _UNSET) -> Any:
+    """显式 kwarg > EnvConfig 字段 > 库默认（_UNSET = 交给调用方的默认）。
+
+    None 一律表示"没给"（与构造器形参默认值 None 同义）；0 / False / 空串都是
+    真输入，按 is not None 判定，绝不做布尔化 —— 否则
+    EnvConfig(emit_reward_components=False) 又会静默失效。
+    """
+    if kwarg is not None:
+        return kwarg
+    if cfg_value is not None:
+        return cfg_value
+    return default
+
+
+# ── YAML 快照：观测段 / 传感器的可重建描述 ────────────────────────────
+_SIMPLE_SEGMENTS = ("Odom", "Goal", "Err", "GoalSig", "PathValid", "PathProgress")
+
+
+def _reject_extra_keys(
+    payload: Mapping[str, Any], allowed: Iterable[str], who: str
+) -> None:
+    """快照里的未知字段直接报错 —— 静默丢字段就等于静默改配置。"""
+    extra = sorted(set(payload) - set(allowed))
+    if extra:
+        raise ValueError(f"{who}: 未知字段 {extra}；允许 {sorted(allowed)}")
+
+
+def _describe_segment(seg: Any) -> dict[str, Any]:
+    """一个观测段 → {"type": 标签, 该类型的字段...}。Custom 不可表达，报错。"""
+    from chassis_sim.obs.spec import Custom
+
+    tag = type(seg).__name__
+    if tag in _SIMPLE_SEGMENTS and not vars(seg):
+        return {"type": tag}
+    if tag == "PathSegment":
+        return {"type": tag, "points": int(seg.points)}
+    if tag == "Act":
+        return {"type": tag, "action_dim": int(seg.action_dim)}
+    if tag == "LidarSegment":
+        counts = seg.ray_counts
+        return {
+            "type": tag,
+            "name": str(seg.name),
+            "sensors": list(seg.sensors),
+            "pool": str(seg.pool),
+            "ray_counts": (
+                None if counts is None else {str(k): int(v) for k, v in counts.items()}
+            ),
+        }
+    if type(seg) is Custom:
+        raise ValueError(
+            f"Custom 段 {seg.name!r} 带 callable，YAML 快照无法重建 —— "
+            "to_yaml() 不静默丢弃它；含 Custom 的 ObsSpec 请直接在 Python 里构造"
+        )
+    raise ValueError(f"未登记的观测段类型 {tag!r}：快照不知道怎么写它")
+
+
+def _build_segment(payload: Mapping[str, Any]) -> Any:
+    """_describe_segment 的逆操作；未知标签 / 字段直接报错。"""
+    from chassis_sim.obs.spec import (
+        Act,
+        Err,
+        Goal,
+        GoalSig,
+        LidarSegment,
+        Odom,
+        PathProgress,
+        PathSegment,
+        PathValid,
+    )
+
+    if not isinstance(payload, Mapping) or "type" not in payload:
+        raise ValueError(f"观测段描述应为含 type 的 mapping，得到 {payload!r}")
+    tag = payload["type"]
+    simple = {
+        "Odom": Odom,
+        "Goal": Goal,
+        "Err": Err,
+        "GoalSig": GoalSig,
+        "PathValid": PathValid,
+        "PathProgress": PathProgress,
+    }
+    if tag in simple:
+        _reject_extra_keys(payload, ("type",), f"segments[{tag}]")
+        return simple[tag]()
+    if tag == "PathSegment":
+        _reject_extra_keys(payload, ("type", "points"), "segments[PathSegment]")
+        return PathSegment(points=int(payload["points"]))
+    if tag == "Act":
+        _reject_extra_keys(payload, ("type", "action_dim"), "segments[Act]")
+        return Act(action_dim=int(payload["action_dim"]))
+    if tag == "LidarSegment":
+        _reject_extra_keys(
+            payload,
+            ("type", "name", "sensors", "pool", "ray_counts"),
+            "segments[LidarSegment]",
+        )
+        counts = payload.get("ray_counts")
+        return LidarSegment(
+            name=str(payload["name"]),
+            sensors=tuple(str(s) for s in payload["sensors"]),
+            pool=str(payload.get("pool", "none")),
+            ray_counts=(
+                None if counts is None else {str(k): int(v) for k, v in counts.items()}
+            ),
+        )
+    supported = sorted(_SIMPLE_SEGMENTS + ("PathSegment", "Act", "LidarSegment"))
+    raise ValueError(f"未知的观测段类型标签 {tag!r}；支持 {supported}")
+
+
+def _segment_key(seg: Any) -> Any:
+    """用于相等比较的段键（Custom 的 callable 按对象比，序列化另走 describe）。"""
+    tag = type(seg).__name__
+    if tag == "PathSegment":
+        return (tag, int(seg.points))
+    if tag == "Act":
+        return (tag, int(seg.action_dim))
+    if tag == "LidarSegment":
+        counts = seg.ray_counts
+        return (
+            tag,
+            str(seg.name),
+            tuple(seg.sensors),
+            str(seg.pool),
+            None
+            if counts is None
+            else tuple(sorted((str(k), int(v)) for k, v in counts.items())),
+        )
+    return (tag, tuple(sorted(vars(seg).items())))
+
+
+def _spec_key(spec: Any) -> Any:
+    """ObsSpec → 可比较的结构键（None 原样保留）。"""
+    if spec is None:
+        return None
+    return tuple(_segment_key(s) for s in spec.segments)
+
+
+def _describe_sensor(sensor: Any) -> dict[str, Any]:
+    """一条传感器 spec → {"type": 标签, 该 dataclass 的全部字段}。"""
+    tag = type(sensor).__name__
+    if tag not in ("Lidar", "Imu", "WheelOdom"):
+        raise ValueError(f"未登记的传感器类型 {tag!r}：快照不知道怎么写它")
+    out: dict[str, Any] = {"type": tag}
+    for f in fields(sensor):
+        value = getattr(sensor, f.name)
+        out[f.name] = [float(x) for x in value] if f.name == "mount" else value
+    return out
+
+
+def _build_sensor(payload: Mapping[str, Any]) -> Any:
+    """_describe_sensor 的逆操作；未知类型 / 字段直接报错。"""
+    from chassis_sim.sensors.specs import Imu, Lidar, WheelOdom
+
+    classes = {"Lidar": Lidar, "Imu": Imu, "WheelOdom": WheelOdom}
+    if not isinstance(payload, Mapping) or payload.get("type") not in classes:
+        raise ValueError(f"未知的传感器描述 {payload!r}；支持 {sorted(classes)}")
+    cls = classes[payload["type"]]
+    _reject_extra_keys(
+        payload,
+        ("type",) + tuple(f.name for f in fields(cls)),
+        f"sensors[{cls.__name__}]",
+    )
+    kwargs = {k: v for k, v in payload.items() if k != "type"}
+    if cls is Lidar and "mount" in kwargs:
+        kwargs["mount"] = tuple(float(x) for x in kwargs["mount"])
+    return cls(**kwargs)

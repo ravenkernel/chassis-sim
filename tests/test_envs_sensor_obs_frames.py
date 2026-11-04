@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from chassis_sim.envs.chassis_env import ChassisSimEnv
+from chassis_sim.envs import ChassisSimEnv
 from chassis_sim.obs import LidarSegment, ObsSpec, Odom
 from chassis_sim.sensors import Imu, Lidar, WheelOdom
 

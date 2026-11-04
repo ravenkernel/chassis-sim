@@ -1,6 +1,6 @@
 """path_extractor 的 import 必须自洽：干净解释器里能 import，也能真跑一次 extract()。
 
-病（W4b 上报，本会话复核）：src/chassis_sim/envs/path_extractor.py:111 曾是主仓
+病（W4b 上报，本会话复核）：path_extractor 模块 曾是主仓
 时代的绝对 import `from envs.path_utils import _arc_length`，每次 extract() 都执行；
 干净安装（无 PYTHONPATH、sys.path 里没有 drl-sim）下 ⇒ ModuleNotFoundError。
 
@@ -18,11 +18,12 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ENVS_DIR = REPO_ROOT / "src" / "chassis_sim" / "envs"
-PATH_EXTRACTOR = ENVS_DIR / "path_extractor.py"
+# 1.0.0 起 PathExtractor 住在稳定公共路径 chassis_sim.paths（原 envs/path_extractor.py）
+PATH_EXTRACTOR = REPO_ROOT / "src" / "chassis_sim" / "paths.py"
 
 _PROBE = """\
 import numpy as np
-from chassis_sim.envs.path_extractor import PathExtractor
+from chassis_sim.paths import PathExtractor
 
 path = np.column_stack([
     np.linspace(0.0, 5.0, 60),

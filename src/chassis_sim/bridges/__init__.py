@@ -1,34 +1,21 @@
 """纯 numpy 的传感器桥（`SensorProvider` 实现）。
 
 对外暴露：抽象接口 `SensorProvider`、实现 `SimpleBridge`、把归一化动作接到吃
-物理命令的外部模拟器上的适配器 `PhysicalCommandBridge`，以及扫描通路的两个
-入口 `get_scan` / `scan_to_pointcloud`（后者原本就在 base.py 的模块层）。
-`raycast` 里的两个下划线函数是实现细节，不在此转发（避免把私有符号变成公共 API）。
+物理命令的外部模拟器上的适配器 `PhysicalCommandBridge`。
 
-`get_scan` 在 `SensorProvider` 上是**方法**（基类实现直接抛 NotImplementedError，
-由 `SimpleBridge` 覆盖），这里转成一个模块级入口，这样
-`from chassis_sim.bridges import get_scan, scan_to_pointcloud` 取到的是一对函数，
-不必先拿到具体桥的类。转发而非别名：别名会绑到基类那个抛异常的实现上。
+1.0.0 起雷达只有一条通路：`bridge.get_sensor_reading()` 的 lidar 条目。
+模块级的扫描字典 / 点云转换入口随旧接口一起删除，本包不再有第二套扫描格式。
+`raycast` 里的两个下划线函数是实现细节，不在此转发（避免把私有符号变成公共 API）。
 """
 
 from __future__ import annotations
 
-from typing import Any
-
 from .adapters import PhysicalCommandBridge
-from .base import SensorProvider, scan_to_pointcloud
+from .base import SensorProvider
 from .simple_bridge import SimpleBridge
-
-
-def get_scan(bridge: SensorProvider, side: str = "front") -> dict[str, Any]:
-    """转调 `bridge.get_scan(side)`（模块级入口；语义与实现完全由桥决定）。"""
-    return bridge.get_scan(side)
-
 
 __all__ = [
     "PhysicalCommandBridge",
     "SensorProvider",
     "SimpleBridge",
-    "get_scan",
-    "scan_to_pointcloud",
 ]

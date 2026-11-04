@@ -10,6 +10,7 @@ import pytest
 
 from chassis_sim.bridges import SimpleBridge
 from chassis_sim.chassis import AckermannChassis
+from chassis_sim.sensors import Lidar
 
 # render 层只在函数内部 import matplotlib（缺失时抛 ImportError 而不是
 # ModuleNotFoundError），跳过必须发生在任何 chassis_sim.render 导入与调用之前。
@@ -44,8 +45,20 @@ RECT_WIDTH = 0.4
 
 
 def _make_bridge() -> SimpleBridge:
-    """车在 (3,3) 朝 45°，一个圆在 (6.5,4)，一个矩形在 (4,6.5)。"""
-    bridge = SimpleBridge(AckermannChassis())
+    """车在 (3,3) 朝 45°，一个圆在 (6.5,4)，一个矩形在 (4,6.5)。
+
+    雷达只有 get_sensor_reading 一个入口：前/后两支 Lidar 必须显式装配（mount 取
+    底盘的真实安装位，几何与旧的两键接口逐位相同）。
+    """
+    chassis = AckermannChassis()
+    front, rear = chassis.lidar_mounts()
+    bridge = SimpleBridge(
+        chassis,
+        sensors=[
+            Lidar("front", mount=front, n_rays=180),
+            Lidar("rear", mount=rear, n_rays=180),
+        ],
+    )
     path = np.array(
         [
             [CAR_XY[0], CAR_XY[1], CAR_THETA],
@@ -167,10 +180,7 @@ class _BlindBridge:
     def obstacle_shapes(self) -> list[dict]:
         return [{"shape": {"name": "circle", "radius": 0.6}, "state": [6.5, 4.0, 0.0]}]
 
-    def get_lidar_front(self) -> None:
-        return None
-
-    def get_lidar_rear(self) -> None:
+    def get_sensor_reading(self) -> None:
         return None
 
 

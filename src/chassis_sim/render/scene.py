@@ -1,10 +1,9 @@
 """渲染场景快照：与 matplotlib 完全解耦的只读数据视图。
 
-场景优先走桥的**公开只读方法**：`pose()`、`obstacle_shapes()`（`SimpleBridge` 本轮
-新增的两个访问器，语义与 `reset(obstacles=...)` 的输入格式一致）。桥没有这两个
-方法时（第三方同构桥）退回读私有数组（`_circle_centers` / `_circle_radii` /
-`_rect_centers` / `_rect_half_dims` / `_rect_thetas` / `_x` / `_y` / `_theta`），
-再退回 `get_odometry()`。渲染层只读取、不写回，也不改变桥的任何行为。
+场景只走桥的**公开只读方法**：`pose()`、`obstacle_shapes()`（语义与
+`reset(obstacles=...)` 的输入格式一致），位姿最后退回 `get_odometry()`。
+1.0.0 起渲染层**不再**读私有字段（`_x` / `_y` / `_theta` / `_circle_centers` ...）：
+那样会把桥的内部实现变成事实上的公共契约。渲染层只读取、不写回，也不改变桥的任何行为。
 
 参考路径的第 2 列是**车头鼻向**（不是运动方向），所以倒车段上鼻向与运动方向相差 π；
 `split_path_by_direction` 据此把路径切成前进 / 倒车两组折线，供着色使用。
@@ -17,29 +16,14 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 
+from chassis_sim.protocols import Bridge
+
 _DEFAULT_WORLD: tuple[float, float, float, float] = (0.0, 10.0, 0.0, 10.0)
 _DEFAULT_FOOTPRINT: tuple[float, float] = (0.38, 0.20)
 _DEFAULT_MOUNTS: tuple[tuple[float, float, float], tuple[float, float, float]] = (
     (0.145, 0.0, 0.0),
     (-0.155, 0.0, math.pi),
 )
-
-
-def _as_pairs(value: object, width: int) -> np.ndarray:
-    """把任意输入整理成 (N, width) 的 float64 数组；None / 空输入给 (0, width)。"""
-    if value is None:
-        return np.empty((0, width), dtype=np.float64)
-    arr = np.asarray(value, dtype=np.float64)
-    if arr.size == 0:
-        return np.empty((0, width), dtype=np.float64)
-    return arr.reshape(-1, width)
-
-
-def _as_scalars(value: object) -> np.ndarray:
-    """把任意输入整理成 (N,) 的 float64 数组；None / 空输入给 (0,)。"""
-    if value is None:
-        return np.empty((0,), dtype=np.float64)
-    return np.asarray(value, dtype=np.float64).reshape(-1)
 
 
 def normalize_path(value: object) -> np.ndarray:
@@ -106,7 +90,7 @@ def _arrays_from_shapes(
     """把 `obstacle_shapes()` 的 dict 列表转成五组障碍物数组。
 
     输入格式与 `SimpleBridge.reset(obstacles=...)` 一致；遇到未知形状返回 None，
-    调用方据此退回去读私有数组（不静默丢障碍物）。
+    调用方据此退回空场景（不静默丢障碍物、也不读私有字段）。
     """
     circles: list[list[float]] = []
     radii: list[float] = []
@@ -146,27 +130,27 @@ def _arrays_from_shapes(
 
 
 def _obstacle_arrays(
-    bridge: object,
+    bridge: Bridge,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """优先读公开 `obstacle_shapes()`，退回私有数组。"""
-    public = getattr(bridge, "obstacle_shapes", None)
-    if callable(public):
-        try:
-            arrays = _arrays_from_shapes(public())
-        except (TypeError, ValueError, AttributeError):
-            arrays = None
-        if arrays is not None:
-            return arrays
-    return (
-        _as_pairs(getattr(bridge, "_circle_centers", None), 2),
-        _as_scalars(getattr(bridge, "_circle_radii", None)),
-        _as_pairs(getattr(bridge, "_rect_centers", None), 2),
-        _as_pairs(getattr(bridge, "_rect_half_dims", None), 2),
-        _as_scalars(getattr(bridge, "_rect_thetas", None)),
+    """读公开只读方法 obstacle_shapes()；桥没有/读不出时给空数组。"""
+    empty = (
+        np.empty((0, 2)),
+        np.empty((0,)),
+        np.empty((0, 2)),
+        np.empty((0, 2)),
+        np.empty((0,)),
     )
+    public = getattr(bridge, "obstacle_shapes", None)
+    if not callable(public):
+        return empty
+    try:
+        arrays = _arrays_from_shapes(public())
+    except (TypeError, ValueError, AttributeError):
+        return empty
+    return empty if arrays is None else arrays
 
 
-def steering_angle(bridge: object) -> float | None:
+def steering_angle(bridge: Bridge) -> float | None:
     """读取当前前轮转角（弧度）；拿不到就给 None（渲染层随即使四轮对齐车身）。"""
     owners = [bridge, getattr(bridge, "chassis", None)]
     names = ("steering_angle", "steer_angle")
@@ -222,8 +206,8 @@ def nearest_obstacle_distance(scene: Scene) -> float | None:
     return best
 
 
-def pose_from_bridge(bridge: object) -> tuple[float, float, float]:
-    """读取桥的真实位姿：优先公开 `pose()`，其次私有字段，最后 `get_odometry()`。"""
+def pose_from_bridge(bridge: Bridge) -> tuple[float, float, float]:
+    """读取桥的真实位姿：优先公开 `pose()`，其次 `get_odometry()`。"""
     public = getattr(bridge, "pose", None)
     if callable(public):
         try:
@@ -232,12 +216,6 @@ def pose_from_bridge(bridge: object) -> tuple[float, float, float]:
             arr = np.empty((0,), dtype=np.float64)
         if arr.size >= 3:
             return (float(arr[0]), float(arr[1]), float(arr[2]))
-    if all(hasattr(bridge, name) for name in ("_x", "_y", "_theta")):
-        return (
-            float(bridge._x),
-            float(bridge._y),
-            float(bridge._theta),
-        )
     getter = getattr(bridge, "get_odometry", None)
     if getter is None:
         raise TypeError("bridge 既没有 (_x, _y, _theta)，也没有 get_odometry()")
@@ -247,7 +225,7 @@ def pose_from_bridge(bridge: object) -> tuple[float, float, float]:
     return (float(odom[0]), float(odom[1]), float(odom[2]))
 
 
-def scene_from_bridge(bridge: object) -> Scene:
+def scene_from_bridge(bridge: Bridge) -> Scene:
     """从 `SimpleBridge`（或同构桥）抽取只读场景快照。"""
     chassis = getattr(bridge, "chassis", None)
     if chassis is not None:

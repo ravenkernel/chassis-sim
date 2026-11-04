@@ -21,7 +21,7 @@ import pytest
 
 from chassis_sim.bridges import SimpleBridge
 from chassis_sim.chassis import make_chassis
-from chassis_sim.envs.chassis_env import ChassisSimEnv
+from chassis_sim.envs import ChassisSimEnv
 from chassis_sim.sensors import Imu, Lidar, WheelOdom
 
 SENSOR_NAMES = {"imu", "wheel", "scan"}

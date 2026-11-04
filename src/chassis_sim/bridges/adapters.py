@@ -109,14 +109,6 @@ class PhysicalCommandBridge(SensorProvider):
         )
 
     # ── 传感器与判定：逐字透传 ──────────────────────────────────────────
-    def get_lidar_front(self) -> np.ndarray:
-        """透传内层桥的前向扫描。"""
-        return self.inner.get_lidar_front()
-
-    def get_lidar_rear(self) -> np.ndarray:
-        """透传内层桥的后向扫描。"""
-        return self.inner.get_lidar_rear()
-
     def get_odometry(self) -> np.ndarray:
         """透传内层桥的里程计 `[x, y, theta, v, omega]`。"""
         return self.inner.get_odometry()
@@ -149,14 +141,6 @@ class PhysicalCommandBridge(SensorProvider):
     def goal_heading(self) -> float:
         """透传内层桥的目标期望朝向。"""
         return self.inner.goal_heading
-
-    def get_scan(self, side: str = "front") -> dict[str, Any]:
-        """透传内层桥的扫描字典（`side` 原样转发）。
-
-        Args:
-            side: 传感器侧别，取值由内层桥决定。
-        """
-        return self.inner.get_scan(side)
 
     def get_sensor_reading(self) -> dict[str, Any] | None:
         """转发内层桥的可选传感器读数；内层不支持该能力时返回 `None`。

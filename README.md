@@ -8,10 +8,10 @@ English | [简体中文](https://github.com/zhao6663/chassis-sim/blob/main/READM
 
 **A small, dependency-light Gymnasium benchmark for three chassis types** — Ackermann
 steering, differential drive, and mecanum — with normalized actions, a pure-NumPy
-simulator, a composable observation spec, declarative sensors, and reference
-controllers for reproducible evaluation.
+simulator, a composable observation spec, declarative sensors, reference controllers,
+and a one-line API that makes, evaluates and records an environment.
 
-Version 0.2.1. Python 3.10+.
+Version 1.0.0. Python 3.10+.
 
 ## At a glance
 
@@ -25,33 +25,34 @@ never asks a user to supply volts, wheel torques, or raw steering angles.
 | `ChassisSim-DiffDrive-v0` | differential drive | 2 | `[speed, yaw]` | 128 | `v ∈ [-1.2, 1.2] m/s`, `|ω| ≤ 1.0 rad/s` |
 | `ChassisSim-Mecanum-v0` | mecanum | 3 | `[vx, vy, yaw]` | 129 | `v_x ∈ [-1.2, 1.2] m/s`, `|vy| ≤ 0.5 m/s`, `|ω| ≤ 1.0 rad/s` |
 
-The limits above are what `env.chassis.describe()["limits"]` reports with the
-default `EnvConfig`; they are not duplicated in the environment. A different
-`EnvConfig` (or a different `Chassis` instance) changes the physical mapping and
-the action semantics together. For the Ackermann chassis, `delta_max` and
-`curvature_action` decide whether the first action axis means steering angle or
-curvature.
+The limits above are what `env.chassis.describe()["limits"]` reports with the default
+`EnvConfig`; they are not duplicated in the environment. A different `EnvConfig` (or a
+different `Chassis` instance) changes the physical mapping and the action semantics
+together. For the Ackermann chassis, `delta_max` and `curvature_action` decide whether
+the first action axis means steering angle or curvature.
 
 The default observation is the four-segment spec
-`ObsSpec.default(action_dim, path_points=30)` — odometry, reference path, goal, and
-the previous normalized action — so it is 128 values wide on the two 2-action
-chassis and 129 on the mecanum. The 494-value vector of the 0.1.x line is no longer
-the default; it is available as an explicit choice through `ObsLayout.as_spec()`,
-which is documented in [Observation and action contract](#observation-and-action-contract).
+`ObsSpec.default(action_dim, points=30)` — odometry, reference path, goal, and the
+previous normalized action — so it is 128 values wide on the two 2-action chassis and
+129 on the mecanum. The 494-value vector of the 0.1.x line is no longer the default and
+1.0.0 ships no built-in 494 preset: you write the nine-segment `ObsSpec` yourself, as
+shown under [Observation and action contract](#observation-and-action-contract).
 
 ## Installation
 
-Install it from PyPI:
+1.0.0 is on PyPI:
 
 ```bash
 pip install "chassis-sim[viz]"
+pip install "chassis-sim[viz]==1.0.0"   # pin the release
 ```
 
-Drop the `[viz]` suffix for a core install, or use `[planning]` for the Hybrid-A*
-map generator. Need a pinned source instead of PyPI? Every tag carries a wheel on its
-[GitHub release](https://github.com/zhao6663/chassis-sim/releases) page. The 0.1.x line
-(tag `v0.1.4`) is the migration case: it still has the old 494-value observation
-and the old single-config sensor API.
+Drop the `[viz]` suffix for a core install, or use `[planning]` for the Hybrid-A* map
+generator. To pin to a tag instead of PyPI, every tag carries a wheel on its
+[GitHub release](https://github.com/zhao6663/chassis-sim/releases) page. The 0.2.x line
+is the migration case: its default observation, its sensor accessors and several
+module paths differ from 1.0.0 — see [docs/migration-1.0.md](docs/migration-1.0.md)
+for the old → new table.
 
 From a checkout, with the development tools:
 
@@ -67,68 +68,71 @@ pip install -e ".[dev]"
 | --- | --- | --- |
 | `planning` | `numba>=0.56` | Hybrid-A* map generation for the planning scenarios |
 | `viz` | `matplotlib>=3.7`, `rich>=13.0`, `imageio>=2.28` | rendering, GIF export, and rich terminal helpers |
-| `dev` | `pytest>=7.0`, `ruff>=0.4` | test suite and linter |
+| `dev` | `pytest>=7.0`, `ruff>=0.4`, `mypy` | test suite, linter, type check |
 
-The core install depends only on `numpy`, `gymnasium`, and `pyyaml`.
-`matplotlib` is needed only for rendering and `imageio` only for GIF export; both
-come with the `viz` extra, which is what `examples/gallery.py` needs.
+The core install depends only on `numpy`, `gymnasium`, and `pyyaml`. `matplotlib` is
+needed only for rendering and `imageio` only for GIF export; both come with the `viz`
+extra, which is what `cs.record()`, `cs.snapshot()` and `examples/gallery.py` need.
 
-The 0.2.x line ships exactly one built-in simulator: the pure-NumPy `SimpleBridge`.
-No external simulator is required, and there is no `irsim` extra: the ir-sim and
-ROS 2 backends are not part of this package (they remain in the upstream training
+The 1.0.0 line ships exactly one built-in simulator: the pure-NumPy `SimpleBridge`.
+No external simulator is required, and there is no `irsim` extra: the ir-sim and ROS 2
+backends are not part of this package (they remain in the upstream training
 repository). `PhysicalCommandBridge` is the documented seam for such a backend.
 
 ## Quickstart
 
+One import, one constructor, one evaluator:
+
 ```python
-import gymnasium as gym
-import numpy as np
+import chassis_sim as cs
 
-import chassis_sim  # noqa: F401  (registers the three environment ids)
+env = cs.make("ackermann", seed=0)
+print("obs:", env.observation_space.shape)
+print("describe:", env.obs_spec_describe())
 
-env = gym.make("ChassisSim-Ackermann-v0", max_steps=100)
-obs, info = env.reset(seed=0)
-print("obs:", obs.shape, obs.dtype)
-print("action_space:", env.action_space)
-print("obs_spec_describe:", env.unwrapped.obs_spec_describe())
+ctrl = cs.make_controller("pp", env=env)
+res = cs.evaluate(env, ctrl, episodes=20)
+print(
+    "success_rate:", f"{res.success_rate:.0%}", "mean_steps:", f"{res.mean_steps:.1f}"
+)
+print(res.markdown().splitlines()[2])
 
-total_reward = 0.0
-steps = 0
-terminated = truncated = False
-while not (terminated or truncated):
-    obs, reward, terminated, truncated, info = env.step(
-        np.array([0.0, 0.3], dtype=np.float32)
-    )
-    total_reward += float(reward)
-    steps += 1
+rec = cs.record(env, ctrl, out="demo.gif", every=4, fps=12)
+print("gif:", rec.path, "frames:", rec.frames, "steps:", rec.steps)
 
-print("steps=" + str(steps) + " total_reward=" + format(total_reward, ".3f"))
-print("terminated=" + str(terminated) + " truncated=" + str(truncated))
-print("termination_reason:", info["termination_reason"])
-print("info:", {key: info[key] for key in ("step", "collision", "goal_reached", "d_min")})
-env.close()
+auto = cs.evaluate(cs.make("ackermann"), episodes=3)
+print("controller omitted ->", auto.controller, "|", auto.successes, "of", auto.n)
 ```
 
-Running it prints:
+Output:
 
 ```text
-obs: (128,) float32
-action_space: Box(-1.0, 1.0, (2,), float32)
-obs_spec_describe: {'odom': slice(0, 4, None), 'path': slice(4, 124, None), 'goal': slice(124, 126, None), 'act': slice(126, 128, None)}
-steps=100 total_reward=-28.756
-terminated=False truncated=True
-termination_reason: timeout
-info: {'step': 100, 'collision': False, 'goal_reached': False, 'd_min': 4.445171356201172}
+obs: (128,)
+describe: {'odom': slice(0, 4, None), 'path': slice(4, 124, None), 'goal': slice(124, 126, None), 'act': slice(126, 128, None)}
+success_rate: 100% mean_steps: 65.0
+| controller | ackermann |
+gif: demo.gif frames: 17 steps: 65
+controller omitted -> PurePursuitController | 3 of 3
 ```
 
-The three registered ids are `ChassisSim-Ackermann-v0`,
-`ChassisSim-DiffDrive-v0`, and `ChassisSim-Mecanum-v0`. They all use the same
-observation spec machinery, reward, and termination logic; only the chassis, the
-action width, and the width of the `act` segment change.
+`cs.make()` resolves every field as **kwargs > `EnvConfig` field > library default**,
+so `cs.make(cfg, v_max=0.8)` overrides `cfg.v_max` without mutating `cfg`. The first
+argument is positional-only and takes either a chassis name or an `EnvConfig`
+instance; everything else is a keyword argument.
 
-`ChassisSimEnv` terminates on its own `max_steps`; `gym.make` does not add a
-`TimeLimit` wrapper (`max_episode_steps=None` at registration). Pass
-`max_steps=...` to shorten an episode.
+`cs.evaluate(env, controller=None, *, episodes=...)` runs the controller and returns an
+`EvalResult`. Omitting the controller is supported: the evaluator binds
+`PurePursuitController` to `env.unwrapped.chassis` and runs that, which is why the
+four-line version needs no controller object at all. Pass a controller when you want a
+different one — `cs.make_controller("pp", env=env)` and
+`cs.make_controller("dwa", env=env)` return controllers already calibrated to that
+chassis.
+
+`cs.record(env, controller, out="demo.gif", every=4, fps=12)` replays one episode
+through the renderer and writes a GIF (17 frames for a 65-step episode at
+`every=4`); it returns a `RecordingResult` with `path`, `frames`, `steps`,
+`total_reward`, `terminated` and `truncated`. `cs.snapshot(env, "hero.png")` writes a
+single still of the current state.
 
 ## Gallery
 
@@ -149,15 +153,14 @@ full-size file under `docs/media/`.
 ### Chassis kinematics — one reference path, one controller
 
 All three chassis drive the same `obstacles_sparse` path with the same
-`pure_pursuit` controller, so the only thing that changes is the kinematics; all
-three reach the goal in 76 steps.
+`pure_pursuit` controller, so the only thing that changes is the kinematics.
 
 <table>
 <tbody>
 <tr>
-<td align="center" width="33%"><a href="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/chassis_ackermann.gif"><img src="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/chassis_ackermann.gif" width="250" alt="Ackermann chassis tracking the obstacles_sparse path"></a><br><code>chassis_ackermann.gif</code><br><em>obstacles_sparse · ackermann · pure_pursuit · 76 steps to goal</em></td>
-<td align="center" width="33%"><a href="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/chassis_diff_drive.gif"><img src="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/chassis_diff_drive.gif" width="250" alt="Differential-drive chassis tracking the same obstacles_sparse path"></a><br><code>chassis_diff_drive.gif</code><br><em>obstacles_sparse · diff_drive · pure_pursuit · 76 steps to goal</em></td>
-<td align="center" width="33%"><a href="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/chassis_mecanum.gif"><img src="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/chassis_mecanum.gif" width="250" alt="Mecanum chassis tracking the same obstacles_sparse path"></a><br><code>chassis_mecanum.gif</code><br><em>obstacles_sparse · mecanum · pure_pursuit · 76 steps to goal</em></td>
+<td align="center" width="33%"><a href="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/chassis_ackermann.gif"><img src="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/chassis_ackermann.gif" width="250" alt="Ackermann chassis tracking the obstacles_sparse path"></a><br><code>chassis_ackermann.gif</code><br><em>obstacles_sparse · ackermann · pure_pursuit</em></td>
+<td align="center" width="33%"><a href="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/chassis_diff_drive.gif"><img src="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/chassis_diff_drive.gif" width="250" alt="Differential-drive chassis tracking the same obstacles_sparse path"></a><br><code>chassis_diff_drive.gif</code><br><em>obstacles_sparse · diff_drive · pure_pursuit</em></td>
+<td align="center" width="33%"><a href="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/chassis_mecanum.gif"><img src="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/chassis_mecanum.gif" width="250" alt="Mecanum chassis tracking the same obstacles_sparse path"></a><br><code>chassis_mecanum.gif</code><br><em>obstacles_sparse · mecanum · pure_pursuit</em></td>
 </tr>
 </tbody>
 </table>
@@ -172,21 +175,20 @@ most closely.
 ### Controllers — one chassis, one scene
 
 Both clips run the `ackermann` chassis on `dense_static`, so the difference is the
-controller; both reach the goal, DWA in fewer steps.
+controller.
 
 <table>
 <tbody>
 <tr>
-<td align="center" width="50%"><a href="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/controller_pure_pursuit.gif"><img src="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/controller_pure_pursuit.gif" width="400" alt="Pure-pursuit controller on the dense_static path"></a><br><code>controller_pure_pursuit.gif</code><br><em>dense_static · ackermann · pure_pursuit · 104 steps to goal</em></td>
-<td align="center" width="50%"><a href="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/controller_dwa.gif"><img src="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/controller_dwa.gif" width="400" alt="DWA controller on the dense_static path"></a><br><code>controller_dwa.gif</code><br><em>dense_static · ackermann · dwa · 91 steps to goal</em></td>
+<td align="center" width="50%"><a href="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/controller_pure_pursuit.gif"><img src="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/controller_pure_pursuit.gif" width="400" alt="Pure-pursuit controller on the dense_static path"></a><br><code>controller_pure_pursuit.gif</code><br><em>dense_static · ackermann · pure_pursuit</em></td>
+<td align="center" width="50%"><a href="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/controller_dwa.gif"><img src="https://raw.githubusercontent.com/zhao6663/chassis-sim/main/docs/media/controller_dwa.gif" width="400" alt="DWA controller on the dense_static path"></a><br><code>controller_dwa.gif</code><br><em>dense_static · ackermann · dwa</em></td>
 </tr>
 </tbody>
 </table>
 
 One lookahead arc gives smooth tracking with pure pursuit, but the corners are cut
 and the body passes closer to the obstacles. Velocity-window sampling plus an
-obstacle cost makes DWA take the more conservative line and finish in 91 steps
-instead of 104.
+obstacle cost makes DWA take the more conservative line and finish in fewer steps.
 
 ### Scenarios — top-down view
 
@@ -220,159 +222,100 @@ ping-pong cycle, drawn at its t = 0 pose.
 ## Observation and action contract
 
 The observation is a single `float32` vector assembled from an ordered list of
-segments. `ObsSpec.default(action_dim, path_points=30)` is the default list:
+segments. `ObsSpec.default(action_dim, points=30)` is the default list:
 
-`ObsSpec((Odom(), Path(points=path_points), Goal(), Act(action_dim=action_dim)))`
-— odometry, reference path, goal and the previous normalized action, in that order.
+`ObsSpec((Odom(), PathSegment(points=30), Goal(), Act(action_dim=action_dim)))` —
+odometry, reference path, goal and the previous normalized action, in that order.
 
 | Segment | Constructor | Width | Meaning |
 | --- | --- | ---: | --- |
 | `Odom` | `Odom()` | 4 | body-frame `[dx*10, dy*10, v, ω]` |
-| `Path` | `Path(points=30)` | `points * 4` | 30 points × `[rho, sin_phi, cos_phi, dtheta]` |
-| `Goal` | `Goal()` | 2 | goal position in the body frame |
-| `Act` | `Act(action_dim)` | `action_dim` | previous normalized action |
-| `Err` | `Err()` | 2 | normalized cross-track error + heading error |
-| `GoalSig` | `GoalSig()` | 2 | `sin` / `cos` of the goal heading error |
-| `PathValid` | `PathValid()` | 1 | fraction of real path points, `[0, 1]` |
-| `PathProgress` | `PathProgress()` | 1 | arc completion `[0, 1]`, monotone non-decreasing |
-| `Lidar` | `Lidar(name, sensors, pool="none", ray_counts=None)` | Σ rays, or pooled | LiDAR ranges of named sensors, read through the same spec |
-| `Custom` | `Custom(name, dim, fn)` | `dim` | your callable over `ObsContext` |
+| `PathSegment` | `PathSegment(points=30)` | `4 * points` = 120 | reference path in the body frame, `[x, y, ψ, s]` per point |
+| `Goal` | `Goal()` | 2 | goal in the body frame `[x, y]` |
+| `Act` | `Act(action_dim=d)` | `d` | previous normalized action |
 
-`spec.resolved(sensor_meta=None)` returns a `ResolvedObsSpec` with `total_dim`,
-`describe()` (name → `slice`), and `build(ctx)`. The environment exposes the same
-mapping for its live spec as `env.obs_spec_describe()`. Segment names must be
-unique; a `Custom` segment whose callable returns the wrong width raises
-`ValueError` naming the segment, the declared width and the actual one.
-
-The default spec is 128 values wide on the two 2-action chassis and 129 on the
-mecanum, because only the `act` segment changes width:
-
-| Segment | Slice, `d=2` | Slice, `d=3` |
-| --- | --- | --- |
-| `odom` | `[0:4]` | `[0:4]` |
-| `path` | `[4:124]` | `[4:124]` |
-| `goal` | `[124:126]` | `[124:126]` |
-| `act` | `[126:128]` | `[126:129]` |
+That is `4 + 120 + 2 + d`: **128** on the Ackermann and the differential drive,
+**129** on the mecanum (the third action component). `obs_spec_describe()` returns
+the authoritative slice table, so no consumer needs a hard-coded offset:
 
 ```python
-import gymnasium as gym
-import numpy as np
+import chassis_sim as cs
 
-import chassis_sim  # noqa: F401
-from chassis_sim.envs import ObsLayout
-from chassis_sim.obs import Act, Goal, ObsSpec, Odom, Path
+env = cs.make("ackermann")
+print(
+    "default obs:", env.observation_space.shape, "dtype:", env.observation_space.dtype
+)
+print("describe:", env.obs_spec_describe())
 
-for env_id in ("ChassisSim-Ackermann-v0", "ChassisSim-DiffDrive-v0", "ChassisSim-Mecanum-v0"):
-    env = gym.make(env_id)
-    obs, _ = env.reset(seed=0)
-    print(f"{env_id:26s} obs={obs.shape} {obs.dtype} action_dim={env.action_space.shape[0]}")
-    print("  describe:", env.unwrapped.obs_spec_describe())
-    env.close()
-
-for action_dim in (2, 3):
-    spec = ObsSpec.default(action_dim=action_dim, path_points=30)
-    resolved = spec.resolved()
-    print("default spec action_dim=" + str(action_dim), "total=" + str(resolved.total_dim),
-          "segments=" + str([segment.name for segment in spec.segments]))
-
-legacy = ObsLayout(action_dim=2, max_path_points=30).as_spec()
-print("explicit 494 preset:", legacy.resolved().total_dim, legacy.resolved().describe())
-
-custom = ObsSpec((Odom(), Path(points=4), Goal(), Act(action_dim=2)))
-print("path_points=4 total:", custom.resolved().total_dim)
+mecanum = cs.make("mecanum")
+print("mecanum obs:", mecanum.observation_space.shape)
+print("describe:", mecanum.obs_spec_describe())
 ```
-
-Output:
 
 ```text
-ChassisSim-Ackermann-v0    obs=(128,) float32 action_dim=2
-  describe: {'odom': slice(0, 4, None), 'path': slice(4, 124, None), 'goal': slice(124, 126, None), 'act': slice(126, 128, None)}
-ChassisSim-DiffDrive-v0    obs=(128,) float32 action_dim=2
-  describe: {'odom': slice(0, 4, None), 'path': slice(4, 124, None), 'goal': slice(124, 126, None), 'act': slice(126, 128, None)}
-ChassisSim-Mecanum-v0      obs=(129,) float32 action_dim=3
-  describe: {'odom': slice(0, 4, None), 'path': slice(4, 124, None), 'goal': slice(124, 126, None), 'act': slice(126, 129, None)}
-default spec action_dim=2 total=128 segments=['odom', 'path', 'goal', 'act']
-default spec action_dim=3 total=129 segments=['odom', 'path', 'goal', 'act']
-explicit 494 preset: 494 {'lidar': slice(0, 360, None), 'odom': slice(360, 364, None), 'path': slice(364, 484, None), 'goal': slice(484, 486, None), 'act': slice(486, 488, None), 'err': slice(488, 490, None), 'goal_sig': slice(490, 492, None), 'path_valid': slice(492, 493, None), 'path_progress': slice(493, 494, None)}
-path_points=4 total: 24
-```
-
-Never index the vector by hand. `env.obs_spec_describe()` is the contract:
-
-```python
-import numpy as np
-
-from chassis_sim.envs import ChassisSimEnv
-from chassis_sim.obs import Act, Custom, Goal, ObsSpec, Odom, Path
-
-
-def bias(ctx):
-    return np.array([np.sum(np.abs(ctx.odom_rel)) + 0.25])
-
-
-spec = ObsSpec((
-    Odom(),
-    Path(points=30),
-    Goal(),
-    Act(action_dim=2),
-    Custom("bias", 1, bias),
-))
-env = ChassisSimEnv("ackermann", max_steps=20, obs_spec=spec)
-obs, info = env.reset(seed=0)
-print("obs:", obs.shape, "describe:", env.obs_spec_describe())
-for _ in range(3):
-    obs, reward, terminated, truncated, info = env.step(
-        np.array([0.0, 0.3], dtype=np.float32)
-    )
-print("bias value:", float(obs[env.obs_spec_describe()["bias"]][0]))
-
-wrong = ObsSpec((Odom(), Custom("bias", 2, bias)))
-try:
-    ChassisSimEnv("ackermann", max_steps=5, obs_spec=wrong).reset(seed=0)
-except ValueError as exc:
-    print("ValueError:", exc)
-```
-
-Output:
-
-```text
-obs: (129,) describe: {'odom': slice(0, 4, None), 'path': slice(4, 124, None), 'goal': slice(124, 126, None), 'act': slice(126, 128, None), 'bias': slice(128, 129, None)}
-bias value: 0.970000147819519
-ValueError: Custom('bias').build: 期望宽度 2，实际 1
+default obs: (128,) dtype: float32
+describe: {'odom': slice(0, 4, None), 'path': slice(4, 124, None), 'goal': slice(124, 126, None), 'act': slice(126, 128, None)}
+mecanum obs: (129,)
+describe: {'odom': slice(0, 4, None), 'path': slice(4, 124, None), 'goal': slice(124, 126, None), 'act': slice(126, 129, None)}
 ```
 
 ### The explicit 494 value preset
 
-Code written against the 0.1.x layout keeps working by asking for it explicitly.
-`ObsLayout(action_dim, max_path_points).as_spec()` returns the nine-segment spec
-(lidar 360 + odom 4 + path 120 + goal 2 + act + err 2 + goal_sig 2 + path_valid 1 +
-path_progress 1), which is 494 entry values wide for `action_dim=2`:
+The 0.2.x 494-value layout was a nine-segment spec
+(`lidar 360 + odom 4 + path 120 + goal 2 + act 2 + err 2 + goal_sig 2 + path_valid 1
++ path_progress 1`, for `action_dim=2`). 1.0.0 keeps every one of those segments but
+ships no preset built from them, because the LiDAR segment only makes sense when you
+declare the sensors it reads. Write the spec out:
 
 ```python
-import gymnasium as gym
+import numpy as np
 
-import chassis_sim
-from chassis_sim.envs import ObsLayout
+import chassis_sim as cs
 
-env = gym.make("ChassisSim-Ackermann-v0", obs_spec=ObsLayout(2, 30).as_spec()).unwrapped
-obs, info = env.reset(seed=0)
-print("obs:", obs.shape, obs.dtype)
-print("describe:", env.obs_spec_describe())
-env.close()
+env = cs.make(
+    "ackermann",
+    scenario="obstacles_dense",
+    sensors=[
+        cs.Lidar("front", mount=(0.145, 0, 0), n_rays=180),
+        cs.Lidar("rear", mount=(-0.155, 0, np.pi), n_rays=180),
+    ],
+    obs=cs.ObsSpec(
+        (
+            cs.LidarSegment("lidar", sensors=("front", "rear")),
+            cs.Odom(),
+            cs.PathSegment(points=30),
+            cs.Goal(),
+            cs.Act(action_dim=2),
+            cs.Err(),
+            cs.GoalSig(),
+            cs.PathValid(),
+            cs.PathProgress(),
+        )
+    ),
+)
+print("obs:", env.observation_space.shape)
+for name, span in env.obs_spec_describe().items():
+    print(f"  {name:14s} {span.start:3d}-{span.stop:3d}")
 ```
-
-Output:
 
 ```text
-obs: (494,) float32
-describe: {'lidar': slice(0, 360, None), 'odom': slice(360, 364, None), 'path': slice(364, 484, None), 'goal': slice(484, 486, None), 'act': slice(486, 488, None), 'err': slice(488, 490, None), 'goal_sig': slice(490, 492, None), 'path_valid': slice(492, 493, None), 'path_progress': slice(493, 494, None)}
+obs: (494,)
+  lidar            0-360
+  odom           360-364
+  path           364-484
+  goal           484-486
+  act            486-488
+  err            488-490
+  goal_sig       490-492
+  path_valid     492-493
+  path_progress  493-494
 ```
 
-The action is always `Box(-1, 1, (d,), float32)`. The normalized values become
-physical commands inside the chassis: `Chassis.command()` maps an action to
-`(v, ω, vy)`, and `Chassis.step()` advances the kinematic state. For the
-Ackermann chassis, `step()` uses the previous steering angle for the yaw rate and
-then stores the new one, so there is a one-tick steering lag by construction.
+Segment order is the constructor order, so the slice table above is the contract:
+`lidar 0-360` (two 180-ray scans concatenated), `odom 360-364`, `path 364-484`,
+`goal 484-486`, `act 486-488`, `err 488-490`, `goal_sig 490-492`,
+`path_valid 492-493`, `path_progress 493-494`. `obs=` is the documented alias of
+`obs_spec=` in `cs.make()`.
 
 ### Physical-command bridges
 
@@ -413,255 +356,164 @@ chassis = AckermannChassis()
 inner = InnerBridge()
 bridge = PhysicalCommandBridge(inner, chassis)
 print("physical_action([1.0, 0.5]):", chassis.physical_action([1.0, 0.5]))
-bridge.step([0.3, 0.6])  # normalized action in, physical vector out
+bridge.step([0.3, 0.6])
 print("inner received:", inner.commands)
 ```
-
-Output:
 
 ```text
 physical_action([1.0, 0.5]): [0.52558379 0.5       ]
 inner received: [[0.1722752169535286, 0.6]]
 ```
 
-## Scenarios
+## Sensors
 
-Eleven YAML scenarios ship with the package. The first five are core scenarios and
-need only the base install. The last six use Hybrid-A* and Reeds-Shepp planning and
-declare `requires: planning`.
+Sensors are declared as a list of immutable specs: you build the sensors you want
+and pass them to `cs.make(sensors=[...], seed=...)`. A default environment carries
+**no sensor at all**.
 
-| Scenario | Requires | Seed | Static obstacles | Notes |
-| --- | --- | ---: | ---: | --- |
-| `circle` | core | 0 | 0 | circular reference path |
-| `corridor` | core | 0 | 2 | narrow corridor |
-| `dense_static` | core | 0 | 14 | dense static field |
-| `dynamic_crossing` | core | 0 | 0 | moving obstacles supplied through reset options |
-| `straight` | core | 0 | 0 | straight reference path |
-| `obstacles_sparse` | `planning` | 0 | 0 | generated sparse field |
-| `obstacles_medium` | `planning` | 0 | 0 | generated medium field |
-| `obstacles_dense` | `planning` | 0 | 0 | generated dense field |
-| `obstacles_dense_reverse` | `planning` | 0 | 0 | dense field with reverse-oriented paths |
-| `foldback_reverse` | `planning` | 0 | 0 | reverse folds, cusp-filtered |
-| `maze_grid` | `planning` | 1 | 0 | grid maze (YAML seed 1) |
+| Spec | Fields (defaults) |
+| --- | --- |
+| `Lidar` | `name`, `mount=(x, y, yaw)` `(0, 0, 0)`, `fov=π`, `n_rays=180`, `max_range=10.0`, `range_min=0.05`, `noise_std=0.0`, `quant_step=0.0`, `latency_steps=0`, `dropout_prob=0.0` |
+| `Imu` | `name`, `noise_std=0.0` |
+| `WheelOdom` | `name`, `track_width=None` (falls back to the chassis width), `noise_std=0.0` |
 
-Load a scenario once, or build a per-episode reset-options factory:
+Readings are exposed through the `info` dict of `reset()` and `step()`, **keyed by
+the sensor name**, and never enter the observation by themselves:
 
-```python
-from chassis_sim.envs import ChassisSimEnv
-from chassis_sim.scenarios import (
-    load_scenario,
-    scenario_reset_options_factory,
-    scenario_to_reset_options,
-)
+| Key | Value |
+| --- | --- |
+| `info[<lidar name>]` | `{"scan": (n_rays,) float32 or None, "scan_meta": {...}}` |
+| `info[<imu name>]` | `{"ax", "ay", "yaw_rate", "yaw", "t"}` |
+| `info[<wheel name>]` | `{"v_left", "v_right", "v", "t"}` |
 
-names = (
-    "circle", "corridor", "dense_static", "dynamic_crossing", "straight",
-    "obstacles_sparse", "obstacles_medium", "obstacles_dense",
-    "obstacles_dense_reverse", "foldback_reverse", "maze_grid",
-)
-for name in names:
-    scenario = load_scenario(name)
-    print(f"{name:24s} requires={str(scenario.requires):8s} "
-          f"obstacles={len(scenario.obstacles):2d} seed={scenario.seed}")
-
-scenario = load_scenario("corridor")
-options = scenario_to_reset_options(scenario)
-env = ChassisSimEnv("ackermann", max_steps=100)
-obs, info = env.reset(seed=0, options=options)
-print("corridor reset:", obs.shape, "obstacles=", len(env._obstacles),
-      "path=", env.bridge.get_path_global().shape)
-
-factory = scenario_reset_options_factory("obstacles_sparse", base_seed=0)
-env = ChassisSimEnv("ackermann", max_steps=100)
-for episode in range(2):
-    obs, info = env.reset(seed=episode, options=factory(episode))
-    print(f"episode={episode} obstacles={len(env._obstacles)} "
-          f"path={env.bridge.get_path_global().shape}")
-print("factory.stats:", factory.stats)
-```
-
-Output:
-
-```text
-circle                   requires=None     obstacles= 0 seed=0
-corridor                 requires=None     obstacles= 2 seed=0
-dense_static             requires=None     obstacles=14 seed=0
-dynamic_crossing         requires=None     obstacles= 0 seed=0
-straight                 requires=None     obstacles= 0 seed=0
-obstacles_sparse         requires=planning obstacles= 0 seed=0
-obstacles_medium         requires=planning obstacles= 0 seed=0
-obstacles_dense          requires=planning obstacles= 0 seed=0
-obstacles_dense_reverse  requires=planning obstacles= 0 seed=0
-foldback_reverse         requires=planning obstacles= 0 seed=0
-maze_grid                requires=planning obstacles= 0 seed=1
-corridor reset: (128,) obstacles= 2 path= (141, 3)
-episode=0 obstacles=5 path=(152, 3)
-episode=1 obstacles=4 path=(168, 3)
-factory.stats: {'attempts': 2, 'retries': 0, 'failures': 0, 'episodes': 2}
-```
-
-`scenario_to_reset_options(scenario)` returns a plain dict. Reusing that dict for
-every episode replays the same map; the evaluation section below explains why that
-matters. `scenario_reset_options_factory(name, base_seed=0)` returns a callable that
-generates a fresh map for each episode index and exposes its bookkeeping in
-`factory.stats`.
-
-## Evaluation
-
-`evaluate()` runs a controller for `n_episodes` and returns an `EvalResult`.
-`wilson_interval(successes, n)` returns the Wilson score interval at 95% by default
-(`z = 1.959963984540054`).
-
-```text
-evaluate(env_factory, controller, *, n_episodes, seed=0, max_steps=None,
-         reset_options=None, labels=None, allow_mismatch=False) -> EvalResult
-wilson_interval(successes, n, *, z=1.959963984540054) -> (low, high)
-```
-
-`EvalResult` exposes `n`, `successes`, `collisions`, `timeouts`,
-`success_rate`, `collision_rate`, `timeout_rate`, `mean_steps`,
-`mean_return`, `min_obstacle_clearance`, `success_interval`, `success_ci`,
-`map_fingerprints`, `distinct_maps`, `maps_independent`, and
-`same_map_repeated`. `success_ci` is `max(success_rate - low, high - success_rate)`,
-the larger Wilson half-width; the interval itself is asymmetric.
-
-- `distinct_maps` is the number of distinct map fingerprints in the run. `0` means
-  the maps could not be fingerprinted.
-- `maps_independent` is `True` when `n <= 1`, or when every episode has a
-  non-empty fingerprint and all fingerprints are distinct.
-- `same_map_repeated` is `True` when the run contains a repeated map.
-
-A fixed reset-options dict is accepted, but it replays one map. The evaluator warns
-on stderr and the confidence interval must not be used as an independent-sample CI.
-Two episodes with a fixed dict print:
+`bridge.get_sensor_reading()` is the single raw entry point and returns the same
+dictionary the `info` keys are taken from. 1.0.0 has no per-sensor convenience
+accessor: one method covers every sensor, whatever its name or parameters. With no
+sensors configured `info` carries no sensor keys at all.
 
 ```python
-import contextlib
-import io
+import numpy as np
 
-from chassis_sim.controllers import PurePursuitController
-from chassis_sim.envs import ChassisSimEnv
-from chassis_sim.eval import evaluate
-from chassis_sim.scenarios import load_scenario, scenario_to_reset_options
+import chassis_sim as cs
 
-scenario = load_scenario("obstacles_sparse")
-fixed = scenario_to_reset_options(scenario, seed=scenario.seed)
+plain = cs.make("ackermann")
+plain.reset(seed=0)
+obs, reward, terminated, truncated, info = plain.step(np.zeros(2, dtype=np.float32))
+print("default info keys:", sorted(info))
+print("d_min:", info["d_min"], "bridge.max_range:", plain.unwrapped.bridge.max_range)
 
-env = ChassisSimEnv("ackermann", max_steps=500)
-controller = PurePursuitController(chassis=env.chassis)
-
-buf = io.StringIO()
-with contextlib.redirect_stderr(buf):
-    result = evaluate(
-        env, controller, n_episodes=2, seed=0, reset_options=fixed
-    )
-
-print("distinct_maps:", result.distinct_maps)
-print("maps_independent:", result.maps_independent)
-print("same_map_repeated:", result.same_map_repeated)
-for line in buf.getvalue().splitlines():
-    if line.startswith("[WARN][eval]"):
-        print(line)
-```
-
-Output:
-
-```text
-distinct_maps: 1
-maps_independent: False
-same_map_repeated: True
-[WARN][eval] reset_options 是固定 dict：2 个回合跑的是**同一张地图**（回合 seed 只推进 env 内部 RNG，不重掷地图）⇒ success_ci 只是该图上的重放方差，不代表独立样本，不可用于控制器对比。要每回合一张独立地图请传 callable(episode_index)（例：scenario_reset_options_factory('obstacles_dense', base_seed=0)）。
-```
-
-Pass a callable instead, as in the example below. This is the difference between a
-CI over ten independent maps and a CI over ten replays of one map.
-
-```python
-from chassis_sim.controllers import PurePursuitController
-from chassis_sim.envs import ChassisSimEnv
-from chassis_sim.eval import evaluate, wilson_interval
-from chassis_sim.scenarios import scenario_reset_options_factory
-
-probe = ChassisSimEnv("ackermann", max_steps=500)
-controller = PurePursuitController(chassis=probe.chassis)
-factory = scenario_reset_options_factory("obstacles_sparse", base_seed=0)
-result = evaluate(
-    lambda: ChassisSimEnv("ackermann", max_steps=500),
-    controller,
-    n_episodes=10,
-    seed=0,
-    max_steps=500,
-    reset_options=factory,
+sensed = cs.make(
+    "ackermann",
+    sensors=[
+        cs.Lidar("front", mount=(0.145, 0, 0), n_rays=180, noise_std=0.01),
+        cs.Imu("imu", noise_std=0.02),
+        cs.WheelOdom("wheel", noise_std=0.01),
+    ],
+    seed=7,
 )
-print(f"success={result.success_rate:.1%} "
-      f"interval=({result.success_interval[0]:.1%}, {result.success_interval[1]:.1%}) "
-      f"steps={result.mean_steps:.1f} collisions={result.collision_rate:.1%}")
-print(f"distinct_maps={result.distinct_maps} maps_independent={result.maps_independent} "
-      f"same_map_repeated={result.same_map_repeated}")
-for successes in (10, 9, 8, 0):
-    low, high = wilson_interval(successes, 10)
-    print(f"wilson {successes}/10 -> [{low:.4f}, {high:.4f}]")
+sensed.reset(seed=0)
+obs, reward, terminated, truncated, info = sensed.step(np.zeros(2, dtype=np.float32))
+print("sensor info keys:", sorted(info))
+print("front scan:", info["front"]["scan"].shape, info["front"]["scan"].dtype)
+print(
+    "front meta:",
+    {k: info["front"]["scan_meta"][k] for k in ("valid", "dropped", "range_max")},
+)
+print("imu:", {k: round(float(v), 6) for k, v in info["imu"].items()})
+print("wheel:", {k: round(float(v), 6) for k, v in info["wheel"].items()})
+print("d_min:", round(float(info["d_min"]), 4))
+print(
+    "bridge.get_sensor_reading:", sorted(sensed.unwrapped.bridge.get_sensor_reading())
+)
 ```
-
-Output:
 
 ```text
-success=100.0% interval=(72.2%, 100.0%) steps=94.3 collisions=0.0%
-distinct_maps=10 maps_independent=True same_map_repeated=False
-wilson 10/10 -> [0.7225, 1.0000]
-wilson 9/10 -> [0.5958, 0.9821]
-wilson 8/10 -> [0.4902, 0.9433]
-wilson 0/10 -> [0.0000, 0.2775]
+default info keys: ['collision', 'cte', 'd_min', 'goal_reached', 'map_fallback', 'mapped_action', 'path_deviation', 'path_deviation_cte', 'path_dir', 'path_dir_gate', 'progress', 'reverse_triggered', 'reward_components', 'safety_brake', 'step', 'stuck', 'termination_reason', 'timeout']
+d_min: 10.0 bridge.max_range: 10.0
+sensor info keys: ['collision', 'cte', 'd_min', 'front', 'goal_reached', 'imu', 'map_fallback', 'mapped_action', 'path_deviation', 'path_deviation_cte', 'path_dir', 'path_dir_gate', 'progress', 'reverse_triggered', 'reward_components', 'safety_brake', 'step', 'stuck', 'termination_reason', 'timeout', 'wheel']
+front scan: (180,) float32
+front meta: {'valid': True, 'dropped': False, 'range_max': 10.0}
+imu: {'ax': 0.019794, 'ay': -0.005537, 'yaw_rate': 0.033798, 'yaw': 0.0, 't': 0.1}
+wheel: {'v_left': -0.010802, 'v_right': -0.005745, 'v': -0.008273, 't': 0.1}
+d_min: 4.9867
+bridge.get_sensor_reading: ['front', 'imu', 'wheel']
 ```
 
-### Reference matrix
+Two consequences are worth reading twice. First, `info["d_min"]` is `10.0` — exactly
+`bridge.max_range` — until a LiDAR is declared, because nothing measured an obstacle
+distance: the obstacle term of the reward degenerates to a constant in that
+configuration. Second, the observation is bit-identical with and without sensors
+unless a `LidarSegment` names them.
 
-The table below was produced by exactly this protocol: `n=10` independent maps,
-`max_steps=500`, `base_seed=0`, Wilson 95% CI. Success is shown as
-`rate ± success_ci` (the larger Wilson half-width); mean steps and collision rate
-cover all ten episodes. Every cell reports `distinct_maps=10` and
-`maps_independent=True`. The random baseline samples uniformly from the normalized
-action space.
+### Missing frames and the LiDAR observation segment
 
-| Scenario | Chassis | Controller | Success (Wilson 95%) | Mean steps | Collision rate |
-| --- | --- | --- | ---: | ---: | ---: |
-| `obstacles_sparse` | Ackermann | pure pursuit | 100% ± 27.8 | 94.3 | 0% |
-| `obstacles_sparse` | Ackermann | DWA | 100% ± 27.8 | 76.9 | 0% |
-| `obstacles_sparse` | Ackermann | random | 0% ± 27.8 | 303.3 | 70% |
-| `obstacles_sparse` | differential | pure pursuit | 100% ± 27.8 | 93.1 | 0% |
-| `obstacles_sparse` | differential | DWA | 100% ± 27.8 | 76.0 | 0% |
-| `obstacles_sparse` | differential | random | 0% ± 27.8 | 365.4 | 60% |
-| `obstacles_sparse` | mecanum | pure pursuit | 100% ± 27.8 | 93.1 | 0% |
-| `obstacles_sparse` | mecanum | DWA | 100% ± 27.8 | 76.0 | 0% |
-| `obstacles_sparse` | mecanum | random | 0% ± 27.8 | 275.7 | 70% |
-| `obstacles_dense` | Ackermann | pure pursuit | 90% ± 30.4 | 84.4 | 10% |
-| `obstacles_dense` | Ackermann | DWA | 100% ± 27.8 | 72.7 | 0% |
-| `obstacles_dense` | Ackermann | random | 0% ± 27.8 | 203.3 | 90% |
-| `obstacles_dense` | differential | pure pursuit | 80% ± 31.0 | 79.6 | 20% |
-| `obstacles_dense` | differential | DWA | 100% ± 27.8 | 72.8 | 0% |
-| `obstacles_dense` | differential | random | 0% ± 27.8 | 195.0 | 90% |
-| `obstacles_dense` | mecanum | pure pursuit | 80% ± 31.0 | 79.6 | 20% |
-| `obstacles_dense` | mecanum | DWA | 100% ± 27.8 | 72.8 | 0% |
-| `obstacles_dense` | mecanum | random | 0% ± 27.8 | 242.9 | 70% |
+A `LidarSegment` observation segment publishes the scan of the named sensors inside
+the observation vector; `chassis_sim.sensors.Lidar` is the sensor spec that produces
+that scan. The bridge produces a real first frame immediately after `reset()`, and
+that frame is the one the reset observation carries.
 
-The shipped `examples/eval_matrix.py` is a shorter smoke run: it covers only
-`obstacles_sparse` with `max_steps=300`. Its pure-pursuit and DWA rows match the
-table above; its random rows differ because of the shorter horizon. To reproduce
-the table exactly, use the same `evaluate(...)` protocol with `max_steps=500`
-and both scenarios.
+When a frame is missing — a delayed frame still inside the latency ring, or a
+dropped frame — the segment keeps the **last valid scan** (zero-order hold). If no
+valid frame has ever been delivered, the segment is filled with `max_range`.
+`env.reset()` clears the hold cache. The observation itself carries no validity bit:
+`scan_meta["valid"]` and `scan_meta["dropped"]` in `info` remain the only place that
+says the frame was missing.
 
-```bash
-python examples/eval_matrix.py
-```
+LiDAR processing order is fixed: clip to `[range_min, range_max]`, add Gaussian
+noise, clip again, quantize, cast to `float32`, push through the latency ring, then
+apply dropout at delivery time. Delayed frames therefore carry the noise of their
+acquisition step, and a dropped frame is the one that would have been delivered.
+Each sensor owns its own random stream, derived from `(sensor_seed, name)`, so
+adding or removing one sensor never shifts the noise of the others.
 
 ## Controllers
-
-Two controllers ship in `chassis_sim.controllers`:
 
 | Class | Role | Key defaults |
 | --- | --- | --- |
 | `PurePursuitController` | geometric path tracking | `lookahead=0.6`, `adaptive=False`, `lookahead_gain=0.8` |
 | `DwaController` | sampling-based local planner | `dt=0.1`, `horizon=10`, `gear_mode="off"` |
+
+Construct one through `make_controller()`, which is the only documented spelling:
+
+```python
+import chassis_sim as cs
+
+try:
+    cs.PurePursuitController()
+except TypeError as exc:
+    print("TypeError:", exc)
+
+env = cs.make("ackermann")
+pp = cs.make_controller("pp", env=env)
+dwa = cs.make_controller("dwa", env=env)
+print("pp:", type(pp).__name__, "dwa:", type(dwa).__name__)
+
+same = cs.make_controller("pp", chassis=env.unwrapped.chassis)
+print("explicit chassis:", type(same).__name__)
+
+result = cs.evaluate(env, pp, episodes=5)
+print("with explicit controller:", result.n, f"{result.success_rate:.0%}")
+
+auto = cs.evaluate(cs.make("ackermann"), episodes=5)
+print("controller omitted:", auto.controller, f"{auto.success_rate:.0%}")
+```
+
+```text
+TypeError: Controller 需要 chassis= 或 kind= 之一来确定车型
+pp: PurePursuitController dwa: DwaController
+explicit chassis: PurePursuitController
+with explicit controller: 5 100%
+controller omitted: PurePursuitController 100%
+```
+
+A bare `PurePursuitController()` raises `TypeError` on purpose: a controller normalizes
+its output with one chassis's limits, and the environment de-normalizes with
+`env.unwrapped.chassis`. A controller calibrated on the wrong chassis silently scales
+every command (a controller built from `make_chassis("diff_drive")` against an
+Ackermann env asks for 0.5 m/s and drives 0.6 m/s), so there is no default chassis
+anywhere in the package. `evaluate()` compares both sides' limits and raises
+`ValueError` before running when they differ; `allow_mismatch=True` is the explicit
+override.
 
 `DwaController.gear_mode="off"` is the default on purpose. In that mode candidate
 trajectories span the entire `[v_min, v_max]` range and the cost has no gear
@@ -684,272 +536,231 @@ protocol:
 | `to_chassis_action(v, omega, vy=0.0)` | no | helper used by the shipped controllers |
 
 The observation dict passed to `act()` has `pose` (3 values), optional
-`obstacles`, and optional `dt`. The `Controller` base class in
-`chassis_sim.controllers` implements `to_chassis_action()` for you.
-`examples/eval_matrix.py` contains a small `RandomController` that implements only
-`reset()`, `set_path()`, and `act()`; it is the minimal integration example.
-The package does not bundle an MPC controller.
+`obstacles`, and optional `dt`. The `Controller` base class implements
+`to_chassis_action()` for you. `examples/eval_matrix.py` contains a small
+`RandomController` that implements only `reset()`, `set_path()` and `act()`; it is
+the minimal integration example. The package does not bundle an MPC controller.
 
-Controllers must be constructed with the same chassis as the evaluation
-environment, usually `PurePursuitController(chassis=env.chassis)`. If the limits
-differ, `evaluate()` raises `ValueError` before running: the controller would
-normalize with one set of limits and `Chassis.command()` would de-normalize with
-another, silently scaling every command. The actual message is shown below.
+## Evaluation
+
+`evaluate(env, controller=None, *, episodes, seed=0, max_steps=None,
+reset_options=None, labels=None, allow_mismatch=False)` runs the controller for
+`episodes` episodes and returns an `EvalResult`. The episode count is a keyword-only
+argument named `episodes`.
 
 ```python
-import contextlib
-import io
+import chassis_sim as cs
 
-import numpy as np
+env = cs.make("ackermann", max_steps=300)
+res = cs.evaluate(env, episodes=10, seed=0)
+print(
+    "n:",
+    res.n,
+    "success:",
+    f"{res.success_rate:.0%}",
+    "steps:",
+    f"{res.mean_steps:.1f}",
+    "collisions:",
+    res.collisions,
+)
+print("distinct_maps:", res.distinct_maps, "maps_independent:", res.maps_independent)
+print(res.markdown().splitlines()[2])
 
-from chassis_sim.chassis import make_chassis
-from chassis_sim.controllers import DwaController, PurePursuitController
-from chassis_sim.envs import ChassisSimEnv
-from chassis_sim.eval import controller_observation, evaluate
-
-env = ChassisSimEnv("ackermann", max_steps=50)
-obs, info = env.reset(seed=0)
-observation = controller_observation(env)
-
-pp = PurePursuitController(chassis=env.chassis)
-pp.reset()
-pp.set_path(env.bridge.get_path_global())
-print("pure_pursuit act:", pp.act(observation))
-
-dwa = DwaController(chassis=env.chassis, dt=env.dt)
-dwa.reset()
-dwa.set_path(env.bridge.get_path_global())
-print("dwa act:", dwa.act(observation), "gear_mode:", dwa.gear_mode)
-
-
-class ConstantController:
-    def reset(self):
-        pass
-
-    def set_path(self, path_world):
-        self.path = np.asarray(path_world)
-
-    def act(self, observation):
-        return np.array([0.0, 0.2], dtype=np.float32)
-
-
-custom = ConstantController()
-with contextlib.redirect_stderr(io.StringIO()):
-    result = evaluate(
-        lambda: ChassisSimEnv("ackermann", max_steps=100),
-        custom,
-        n_episodes=2,
-        seed=0,
-    )
-print("custom controller:", f"success={result.success_rate:.0%}",
-      f"steps={result.mean_steps:.1f}")
-
-mismatch = PurePursuitController(chassis=make_chassis("diff_drive"))
-try:
-    evaluate(lambda: ChassisSimEnv("ackermann", max_steps=50), mismatch, n_episodes=1)
-except ValueError as exc:
-    print("ValueError:", exc)
+md = res.markdown(title="my run")
+print("markdown title:", md.splitlines()[0], "| rows:", len(md.splitlines()))
 ```
-
-Output:
 
 ```text
-pure_pursuit act: [0. 1.]
-dwa act: [0. 1.] gear_mode: off
-custom controller: success=0% steps=100.0
-ValueError: 控制器与 env 的底盘不一致 —— 控制器是按另一台底盘标定的：
-  controller:  kind='diff_drive' v_min=-1.0 v_max=1.0 omega_max=1.0 vy_max=0.0
-  env.chassis: kind='ackermann' v_min=-0.6 v_max=1.2 omega_max=4.804604297653527 vy_max=0.0
-  不一致项: kind: 控制器 'diff_drive' vs env 'ackermann'; v_min: 控制器 -1.0 vs env -0.6; v_max: 控制器 1.0 vs env 1.2; omega_max: 控制器 1.0 vs env 4.804604297653527
-  后果: to_chassis_action 按控制器的 limits 归一化、Chassis.command() 按
-  env 底盘的 limits 反解 ⇒ 速度/角速度语义被静默缩放（v_max 1.0→1.2 即
-  +20% 超速）。
-  修法: 用 env 的底盘构造控制器（PurePursuitController(
-  chassis=env.unwrapped.chassis)），或显式 evaluate(..., allow_mismatch=True)。
+n: 10 success: 100% steps: 65.0 collisions: 0
+distinct_maps: 1 maps_independent: False
+| controller | ackermann |
+markdown title: **my run** | rows: 11
 ```
 
-## Sensors
+`EvalResult` exposes `n`, `successes`, `collisions`, `timeouts`, `success_rate`,
+`collision_rate`, `timeout_rate`, `mean_steps`, `mean_return`,
+`min_obstacle_clearance`, `success_interval`, `success_ci`, `map_fingerprints`,
+`distinct_maps`, `maps_independent`, `same_map_repeated`, plus `to_dict()` and the
+Markdown renderers `markdown()` (alias of `to_markdown()`). `success_ci` is
+`max(success_rate - low, high - success_rate)`, the larger Wilson half-width; the
+interval itself is asymmetric.
 
-Sensors are declared as a list of immutable specs: you build the sensors you want
-and pass them to the environment (or to `SimpleBridge`) together with a seed.
+- `distinct_maps` is the number of distinct map fingerprints in the run. `0` means
+  the maps could not be fingerprinted.
+- `maps_independent` is `True` when `n <= 1`, or when every episode has a
+  non-empty fingerprint and all fingerprints are distinct.
+- `same_map_repeated` is `True` when the run contains a repeated map.
 
-```python
-from chassis_sim.sensors import Lidar, Imu, WheelOdom
+A fixed reset-options dict is accepted, but it replays one map: the evaluator warns
+on stderr, the Markdown table flags the row as `⚠固定地图`, and the confidence
+interval must not be quoted as an independent-sample CI. Pass a callable instead —
+`scenario_reset_options_factory(name, base_seed=0)` builds a fresh map per episode
+index and exposes `factory.stats`. `examples/eval_matrix.py` is the runnable
+protocol: 3 controllers × 3 chassis × 10 independent maps, both Markdown tables on
+stdout, JSON under `/tmp`:
 
-sensors = [
-    Lidar("scan", mount=(0.0, 0.0, 0.0), fov=3.141592653589793, n_rays=180,
-          max_range=10.0, range_min=0.05, noise_std=0.0, quant_step=0.0,
-          latency_steps=0, dropout_prob=0.0),
-    Imu("imu", noise_std=0.0),
-    WheelOdom("wheel", track_width=None, noise_std=0.0),
-]
+```bash
+python examples/eval_matrix.py
 ```
 
-| Spec | Fields (defaults) |
+`wilson_interval(successes, n, *, z=1.959963984540054)` returns the Wilson score
+interval at 95% by default.
+
+## CLI
+
+The package installs a `chassis-sim` console script, and `python -m chassis_sim` is
+the same program:
+
+```bash
+chassis-sim list-scenarios
+chassis-sim record --out demo.gif --scenario obstacles_sparse --controller pp --steps 300 --every 4 --fps 12 --seed 0
+chassis-sim eval --scenario obstacles_sparse --controller dwa --episodes 10 --seed 0
+chassis-sim render --out frame.png --scenario straight --seed 0
+
+python -m chassis_sim list-scenarios
+python -m chassis_sim eval --scenario dense_static --controller pp --episodes 5
+```
+
+| Subcommand | Flags |
 | --- | --- |
-| `Lidar` | `name`, `mount=(x, y, yaw)` `(0, 0, 0)`, `fov=π`, `n_rays=180`, `max_range=10.0`, `range_min=0.05`, `noise_std=0.0`, `quant_step=0.0`, `latency_steps=0`, `dropout_prob=0.0` |
-| `Imu` | `name`, `noise_std=0.0` |
-| `WheelOdom` | `name`, `track_width=None` (falls back to the chassis width), `noise_std=0.0` |
+| `list-scenarios` | — |
+| `record` | `--out demo.gif`, `--scenario S`, `--controller pp\|dwa`, `--steps N`, `--every K`, `--fps F`, `--seed S` |
+| `eval` | `--scenario S`, `--controller pp\|dwa`, `--episodes N`, `--seed S` |
+| `render` | `--out frame.png`, `--scenario S`, `--seed S` |
 
-Pass them as `sensors=[...], sensor_seed=...` to `ChassisSimEnv` or to
-`SimpleBridge`. `sensors=` and an explicit `bridge=` are mutually exclusive: the
-environment owns the sensor set, so it can inject its own ray caster.
+The console script comes from the distribution's entry point, so an editable checkout
+that predates it needs one `pip install -e ".[dev]"` before `chassis-sim` is on PATH;
+`python -m chassis_sim` always works and needs no entry point.
 
-Readings arrive in the `info` dict of `reset()` and `step()` and never enter the
-observation by themselves:
+`record` and `render` are the two subcommands that need the `viz` extra. When
+`matplotlib` or `imageio` is missing they exit with status **2** and a one-line
+Chinese hint naming `pip install "chassis-sim[viz]"` — not a traceback.
 
-| Key | Value |
-| --- | --- |
-| `info["scan"]` | `{"scan": (n_rays,) float32 or None, "scan_meta": {...}}` |
-| `info["imu"]` | `{"ax", "ay", "yaw_rate", "yaw", "t"}` |
-| `info["wheel"]` | `{"v_left", "v_right", "v", "t"}` |
+## Configuration
 
-`reset()` reports the readings of the frame the bridge produces at the end of its
-own reset, so `obs, info = env.reset()` already carries `scan` / `imu` / `wheel`;
-with no sensors configured `info` stays `{}`. LiDAR processing order is fixed: clip to `[range_min, range_max]`, add Gaussian
-noise, clip again, quantize, cast to `float32`, push through the latency ring,
-then apply dropout at delivery time. Delayed frames therefore carry the noise of
-their acquisition step, and a dropped frame is the one that would have been
-delivered.
-
-Each sensor owns its own random stream, derived from `(sensor_seed, name)`, so
-adding or removing one sensor never shifts the noise of the others. Sensors never
-touch the global `numpy.random` stream and never change the observation — unless
-you ask for a `Lidar` observation segment (next section).
+`EnvConfig` is a dataclass with 44 fields and the single source of truth for every
+knob: chassis, dynamics, action limits, observation, sensors, reward components,
+domain randomization, world bounds. `cs.make(cfg, **kwargs)` resolves each field as
+**kwargs > cfg field > library default**, and `EnvConfig.to_yaml()` /
+`from_yaml()` round-trip the whole configuration, so a run is reproducible from one
+snapshot file.
 
 ```python
-import numpy as np
+import chassis_sim as cs
 
-from chassis_sim.envs import ChassisSimEnv
-from chassis_sim.sensors import Imu, Lidar, WheelOdom
+cfg = cs.EnvConfig(chassis="ackermann", dt=0.1, v_max=1.2, max_steps=500)
+print("fields:", len(cfg.__dataclass_fields__))
+print("domain_rand_enabled:", cfg.domain_rand_enabled)
 
-SENSORS = [
-    Lidar("scan", n_rays=90, fov=np.pi / 2, max_range=6.0,
-          noise_std=0.01, quant_step=0.05, latency_steps=2),
-    Imu("imu", noise_std=0.02),
-    WheelOdom("wheel", noise_std=0.01),
-]
-env = ChassisSimEnv("ackermann", max_steps=50, sensors=SENSORS, sensor_seed=7)
-obs, info = env.reset(seed=0)
-print("obs:", obs.shape, "sensor keys at reset:", sorted(info.keys()))
-for _ in range(3):
-    obs, reward, terminated, truncated, info = env.step(
-        np.array([0.0, 0.3], dtype=np.float32)
-    )
-print("imu:", info["imu"])
-print("wheel:", info["wheel"])
-print("scan:", info["scan"]["scan"].shape, info["scan"]["scan"].dtype)
-print("scan_meta:", info["scan"]["scan_meta"])
+path = cfg.to_yaml("/tmp/run.yaml")
+print("snapshot:", path.name, "->", path.read_text().splitlines()[0])
+print("roundtrip:", cs.EnvConfig.from_yaml(path) == cfg)
 
-plain = ChassisSimEnv("ackermann", max_steps=50)
-plain_obs, plain_info = plain.reset(seed=0)
-print("default sensor keys at reset:", sorted(plain_info.keys()))
-print("obs shapes with/without sensors:", obs.shape, plain_obs.shape)
-
-sensor_env = ChassisSimEnv("ackermann", max_steps=50, sensors=SENSORS, sensor_seed=7)
-plain_env = ChassisSimEnv("ackermann", max_steps=50)
-sensor_obs, _ = sensor_env.reset(seed=3)
-plain_obs, _ = plain_env.reset(seed=3)
-identical = np.array_equal(sensor_obs, plain_obs)
-for _ in range(5):
-    action = np.array([0.0, 0.3], dtype=np.float32)
-    sensor_obs, *_ = sensor_env.step(action)
-    plain_obs, *_ = plain_env.step(action)
-    identical = identical and np.array_equal(sensor_obs, plain_obs)
-print("obs bit-identical with/without sensors over 5 steps:", identical)
+env = cs.make(cfg, v_max=0.8)
+print("kwargs > cfg:", env.unwrapped.chassis.v_max, "(cfg:", cfg.v_max, ")")
+print("cfg carries max_steps:", env.max_steps)
+print(
+    "domain_rand: library default",
+    cs.make("ackermann").unwrapped.domain_rand,
+    "| cfg",
+    cs.make(cs.EnvConfig(domain_rand_enabled=True)).unwrapped.domain_rand,
+    "| kwargs",
+    cs.make(
+        cs.EnvConfig(domain_rand_enabled=True), domain_rand=False
+    ).unwrapped.domain_rand,
+)
 ```
-
-Output:
 
 ```text
-obs: (128,) sensor keys at reset: ['imu', 'scan', 'wheel']
-imu: {'ax': -0.019766656395704817, 'ay': -0.012634059796588477, 'yaw_rate': -0.03938493375340822, 'yaw': 0.0, 't': 0.30000000000000004}
-wheel: {'v_left': 0.3596476518539975, 'v_right': 0.36967108680392974, 'v': 0.3646593693289636, 't': 0.30000000000000004}
-scan: (90,) float32
-scan_meta: {'name': 'scan', 'mount': (0.0, 0.0, 0.0), 'n_rays': 90, 'fov': 1.5707963267948966, 'angle_min': -0.7853981633974483, 'angle_max': 0.7853981633974483, 'angle_increment': 0.017649396930279736, 'range_min': 0.05, 'range_max': 6.0, 'latency_steps': 2, 't': 0.30000000000000004, 'frame_t': 0.1, 'valid': True, 'dropped': False}
-default sensor keys at reset: []
-obs shapes with/without sensors: (128,) (128,)
-obs bit-identical with/without sensors over 5 steps: True
+fields: 44
+domain_rand_enabled: False
+snapshot: run.yaml -> delta_max: 0.526
+roundtrip: True
+kwargs > cfg: 0.8 (cfg: 1.2 )
+cfg carries max_steps: 500
+domain_rand: library default False | cfg True | kwargs False
 ```
 
-### Missing frames and the LiDAR observation segment
+`EnvConfig.domain_rand_enabled` defaults to **False**: the library is deterministic
+unless you ask otherwise. The resolution is three layers — `cs.make(domain_rand=True)`
+wins over `cfg.domain_rand_enabled`, which wins over the library `False`.
+`to_yaml()` writes all 44 fields, so `from_yaml()` restores an identical config and
+the snapshot compares equal to the object it came from.
 
-A `LidarSegment` observation segment (from `chassis_sim.obs`) publishes the scan of
-the named sensors inside the observation vector; `chassis_sim.sensors.Lidar` is the
-sensor spec that produces that scan. The bridge produces a real first frame
-immediately after `reset()`, and that frame is the one the reset observation
-carries.
+## Migrating from 0.2.x
 
-When a frame is missing — a delayed frame still inside the latency ring, or a
-dropped frame — the segment keeps the **last valid scan** (zero-order hold). If no
-valid frame has ever been delivered, the segment is filled with `max_range`.
-`env.reset()` clears the hold cache. The observation itself carries no validity
-bit: `scan_meta["valid"]` and `scan_meta["dropped"]` in `info` remain the only
-place that says the frame was missing.
+0.2.x is not a drop-in upgrade. The default observation width, the observation
+preset helpers, the path segment name, the LiDAR accessors, the episode-count
+keyword and several module paths all changed, and a default environment no longer
+assembles a LiDAR. [docs/migration-1.0.md](docs/migration-1.0.md) is the migration
+guide: one old → new table with runnable replacements, the observation-preset port
+with the nine slices spelled out, and the golden test that pins them.
+
+## Scenarios
+
+Eleven YAML scenarios ship with the package. The first five are core scenarios and
+need only the base install. The last six use Hybrid-A* and Reeds-Shepp planning and
+declare `requires: planning`.
+
+| Scenario | Requires | Seed | Static obstacles | Notes |
+| --- | --- | ---: | ---: | --- |
+| `circle` | core | 0 | 0 | circular reference path |
+| `corridor` | core | 0 | 2 | narrow corridor |
+| `dense_static` | core | 0 | 14 | dense static field |
+| `dynamic_crossing` | core | 0 | 0 | moving obstacles supplied through reset options |
+| `straight` | core | 0 | 0 | straight reference path |
+| `obstacles_sparse` | `planning` | 0 | 0 | generated sparse field |
+| `obstacles_medium` | `planning` | 0 | 0 | generated medium field |
+| `obstacles_dense` | `planning` | 0 | 0 | generated dense field |
+| `obstacles_dense_reverse` | `planning` | 0 | 0 | dense field with reverse-oriented paths |
+| `foldback_reverse` | `planning` | 0 | 0 | reverse folds, cusp-filtered |
+| `maze_grid` | `planning` | 1 | 0 | grid maze (YAML seed 1) |
+
+`cs.make(scenario=...)` loads the scenario and translates it into reset options,
+but it **does not** call `reset()` for you: the keys land in
+`env.default_reset_options` and you hand them to `reset()` yourself. Nothing is
+applied silently, and a misspelled scenario raises `ScenarioNotFoundError` instead of
+being ignored.
 
 ```python
-import numpy as np
+import chassis_sim as cs
 
-from chassis_sim.envs import ChassisSimEnv
-from chassis_sim.obs import Act, Goal, LidarSegment, ObsSpec, Odom, Path
-from chassis_sim.scenarios import load_scenario, scenario_to_reset_options
-from chassis_sim.sensors import Lidar
+env = cs.make("ackermann", scenario="corridor", max_steps=100)
+print("scenario:", env.scenario.name, "requires:", env.scenario.requires)
+print("reset option keys:", sorted(env.default_reset_options))
 
-SPEC = ObsSpec((
-    Odom(),
-    Path(points=30),
-    Goal(),
-    Act(action_dim=2),
-    LidarSegment("scan", sensors=("scan",)),
-))
-
-empty = ChassisSimEnv(
-    "ackermann", max_steps=5, obs_spec=SPEC,
-    sensors=[Lidar("scan", n_rays=36, max_range=3.0, dropout_prob=1.0)],
-    sensor_seed=0,
+obs, info = env.reset(seed=0, options=env.default_reset_options)
+print(
+    "obs:",
+    obs.shape,
+    "obstacles:",
+    len(env.unwrapped._obstacles),
+    "path:",
+    env.unwrapped.bridge.get_path_global().shape,
 )
-obs, info = empty.reset(seed=0)
-span = empty.obs_spec_describe()["scan"]
-print("describe:", empty.obs_spec_describe())
-obs, reward, terminated, truncated, info = empty.step(
-    np.array([0.0, 0.4], dtype=np.float32)
-)
-print("dropout_prob=1.0 -> unique values in the scan segment:",
-      np.unique(obs[span]), "meta.valid:", info["scan"]["scan_meta"]["valid"])
 
-hold = ChassisSimEnv(
-    "ackermann", max_steps=40, obs_spec=SPEC,
-    sensors=[Lidar("scan", n_rays=36, max_range=3.0, dropout_prob=0.6)],
-    sensor_seed=5,
-)
-obs, info = hold.reset(seed=0, options=scenario_to_reset_options(load_scenario("obstacles_dense")))
-previous = obs[span].copy()
-rows = []
-for step in range(1, 21):
-    obs, reward, terminated, truncated, info = hold.step(
-        np.array([0.0, 0.4], dtype=np.float32)
+for name in ("straight", "corridor", "dense_static"):
+    scenario = cs.load_scenario(name)
+    print(
+        f"{name:14s} obstacles={len(scenario.obstacles):2d} "
+        f"requires={scenario.requires} seed={scenario.seed}"
     )
-    meta = info["scan"]["scan_meta"]
-    rows.append((step, bool(meta["valid"]), bool(np.array_equal(obs[span], previous))))
-    previous = obs[span].copy()
-dropped = [(step, same) for step, valid, same in rows if not valid]
-valid = [(step, same) for step, valid, same in rows if valid]
-print("dropped steps:", len(dropped), "all held from the previous frame:",
-      all(same for _, same in dropped))
-print("valid steps:", len(valid), "of which the segment moved:",
-      sum(1 for _, same in valid if not same))
-print("scan range in obs:", float(obs[span].min()), float(obs[span].max()))
 ```
-
-Output:
 
 ```text
-describe: {'odom': slice(0, 4, None), 'path': slice(4, 124, None), 'goal': slice(124, 126, None), 'act': slice(126, 128, None), 'scan': slice(128, 164, None)}
-dropout_prob=1.0 -> unique values in the scan segment: [3.] meta.valid: False
-dropped steps: 13 all held from the previous frame: True
-valid steps: 7 of which the segment moved: 7
-scan range in obs: 0.5022975206375122 3.0
+scenario: corridor requires: None
+reset option keys: ['initial_heading', 'obstacles', 'path_waypoints']
+obs: (128,) obstacles: 2 path: (141, 3)
+straight       obstacles= 0 requires=None seed=0
+corridor       obstacles= 2 requires=None seed=0
+dense_static   obstacles=14 requires=None seed=0
 ```
+
+Reusing one dict for every episode replays the same map. That is fine for a demo and
+wrong for a benchmark: `scenario_reset_options_factory(name, base_seed=0)` returns a
+callable that generates a fresh map per episode index, and `scenario_to_reset_options`
+remains the one-shot form. `cs.list_scenarios()` and `cs.load_scenario()` are part
+of the top-level API.
 
 ## Dynamics
 
@@ -979,12 +790,12 @@ hard-coded slice.
 ```python
 import numpy as np
 
-from chassis_sim.envs import ChassisSimEnv, EnvConfig
+import chassis_sim as cs
 
 
 def run(level, **overrides):
-    cfg = EnvConfig(dynamics=level, **overrides)
-    env = ChassisSimEnv("diff_drive", cfg=cfg, max_steps=10)
+    cfg = cs.EnvConfig(chassis="diff_drive", dynamics=level, **overrides)
+    env = cs.make(cfg, max_steps=10)
     obs, info = env.reset(seed=0)
     obs, reward, terminated, truncated, info = env.step(
         np.array([1.0, 0.0], dtype=np.float32)
@@ -996,11 +807,8 @@ for level in ("none", "limits", "wheel"):
     odom, dynamics_info = run(level)
     print(f"{level:6s} odom={np.round(odom, 6)} info.dynamics={dynamics_info}")
 
-odom, dynamics_info = run("wheel", wheel_slip=0.2)
-print(f"wheel + slip=0.2 odom={np.round(odom, 6)} info.dynamics={dynamics_info}")
-
-default_env = ChassisSimEnv("diff_drive", max_steps=20)
-none_env = ChassisSimEnv("diff_drive", dynamics="none", max_steps=20)
+default_env = cs.make("diff_drive", max_steps=20)
+none_env = cs.make("diff_drive", dynamics="none", max_steps=20)
 default_obs, _ = default_env.reset(seed=3)
 none_obs, _ = none_env.reset(seed=3)
 identical = np.array_equal(default_obs, none_obs)
@@ -1012,13 +820,10 @@ for _ in range(20):
 print("dynamics=None vs 'none' obs bit-identical over 20 steps:", identical)
 ```
 
-Output:
-
 ```text
 none   odom=[1.2 0.  1.2 0. ] info.dynamics=None
 limits odom=[0.15 0.   0.15 0.  ] info.dynamics={'level': 'limits', 'accel_max': 1.5, 'steer_rate_max': 3.0}
 wheel  odom=[0.072987 0.       0.072987 0.      ] info.dynamics={'level': 'wheel', 'accel_max': 1.5, 'steer_rate_max': 3.0, 'v_tau': 0.15, 'omega_tau': 0.1, 'alpha_v': 0.486582880967408, 'alpha_omega': 0.6321205588285577, 'v_deadband': 0.0, 'wheel_slip': 0.0}
-wheel + slip=0.2 odom=[0.05839 0.      0.05839 0.     ] info.dynamics={'level': 'wheel', 'accel_max': 1.5, 'steer_rate_max': 3.0, 'v_tau': 0.15, 'omega_tau': 0.1, 'alpha_v': 0.486582880967408, 'alpha_omega': 0.6321205588285577, 'v_deadband': 0.0, 'wheel_slip': 0.2}
 dynamics=None vs 'none' obs bit-identical over 20 steps: True
 ```
 
@@ -1046,30 +851,34 @@ whose message contains the install hint:
 ```python
 import sys
 
-from chassis_sim.envs import ChassisSimEnv
+import chassis_sim as cs
 from chassis_sim.planning import MapGenerator, hybrid_astar_search, reeds_shepp_length
 from chassis_sim.scenarios import scenario_reset_options_factory
 
-print("planning imports:",
-      MapGenerator.__name__, hybrid_astar_search.__name__, reeds_shepp_length.__name__)
+print(
+    "planning imports:",
+    MapGenerator.__name__,
+    hybrid_astar_search.__name__,
+    reeds_shepp_length.__name__,
+)
 
 factory = scenario_reset_options_factory("obstacles_sparse", base_seed=0)
-env = ChassisSimEnv("ackermann", max_steps=100)
+env = cs.make("ackermann", max_steps=100)
 obs, info = env.reset(seed=0, options=factory(0))
-print("generated map:",
-      f"obstacles={len(env._obstacles)}",
-      f"path={env.bridge.get_path_global().shape}",
-      f"factory.stats={factory.stats}")
+print(
+    "generated map:",
+    f"obstacles={len(env.unwrapped._obstacles)}",
+    f"path={env.unwrapped.bridge.get_path_global().shape}",
+    f"factory.stats={factory.stats}",
+)
 
 sys.modules["numba"] = None
 try:
-    factory_without_numba = scenario_reset_options_factory("obstacles_sparse", base_seed=0)
-    factory_without_numba(0)
+    without_numba = scenario_reset_options_factory("obstacles_sparse", base_seed=0)
+    without_numba(0)
 except ImportError as exc:
     print("ImportError:", exc)
 ```
-
-Output:
 
 ```text
 planning imports: MapGenerator hybrid_astar_search reeds_shepp_length
@@ -1079,41 +888,48 @@ ImportError: 场景 'obstacles_sparse' 需要 Hybrid-A* 地图生成器（chassi
 
 ## Rendering
 
+Three layers, three namespaces:
+
+| Layer | Entry point | Writes |
+| --- | --- | --- |
+| one episode | `cs.record(env, controller, out="demo.gif", every=4, fps=12)` | a GIF (or a frame directory when `imageio` is missing) |
+| one still | `cs.snapshot(env, "hero.png")` | a PNG of the current state |
+| drawing primitives | `chassis_sim.render`: `render_frame`, `render_to_png`, `render_episode_frames`, `save_gif` | PNGs and GIFs, with full control over the scene |
+
 `chassis_sim.render` draws the current bridge state with matplotlib using the
-`Agg` backend, so it works headless. `render_to_png()` writes one frame;
-`render_episode_frames()` steps the bridge through an action sequence and writes
-frames (always including the last step); `save_gif()` assembles frames. matplotlib
-is imported lazily and is only needed for rendering. `imageio` is optional: if it
-is missing, `save_gif()` writes a directory of frames and emits a warning instead
-of raising. `examples/gallery.py` is built on the same primitives (`render_frame`,
-`save_figure`, `save_gif`) and produces the assets in the gallery section.
+`Agg` backend, so it works headless. `render_to_png()` writes one frame and returns
+the path; `render_episode_frames()` steps the bridge through an action sequence and
+writes frames (always including the last step); `save_gif()` assembles frames.
+matplotlib is imported lazily and is only needed for rendering. `imageio` is
+optional: if it is missing, `save_gif()` writes a directory of frames and emits a
+warning instead of raising. `examples/gallery.py` is built on the same primitives
+and produces the assets in the gallery section.
 
 ```python
 from pathlib import Path
 
 import numpy as np
 
-from chassis_sim.envs import ChassisSimEnv
+import chassis_sim as cs
 from chassis_sim.render import render_episode_frames, render_to_png
 
-env = ChassisSimEnv("ackermann", max_steps=50)
+env = cs.make("ackermann", max_steps=50)
 obs, info = env.reset(seed=0)
 out_dir = Path("/tmp/chassis_sim_readme_render")
 out_dir.mkdir(parents=True, exist_ok=True)
 
-png = render_to_png(env.bridge, out_dir / "frame.png", dpi=80)
+png = render_to_png(env.unwrapped.bridge, out_dir / "frame.png", dpi=80)
 print("png:", png.name, "exists:", png.exists())
 
 actions = [
-    np.array([0.2 * np.sin(index / 5.0), 0.4], dtype=np.float64)
-    for index in range(10)
+    np.array([0.2 * np.sin(index / 5.0), 0.4], dtype=np.float64) for index in range(10)
 ]
-frames = render_episode_frames(env.bridge, actions, out_dir, every=5, prefix="step", dpi=80)
+frames = render_episode_frames(
+    env.unwrapped.bridge, actions, out_dir, every=5, prefix="step", dpi=80
+)
 print("frames:", [frame.name for frame in frames])
 print("all non-empty:", all(frame.stat().st_size > 0 for frame in frames))
 ```
-
-Output:
 
 ```text
 png: frame.png exists: True
@@ -1125,11 +941,11 @@ all non-empty: True
 
 | Script | What it does |
 | --- | --- |
-| `examples/dynamic_demo.py` | static vs dynamic `dynamic_crossing` over 20 steps; checks bit-identical replay without dynamic obstacles |
-| `examples/eval_matrix.py` | sparse smoke run: 3 controllers × 3 chassis × 10 independent maps at `max_steps=300`; writes Markdown and JSON |
+| `examples/dynamic_demo.py` | static vs dynamic `dynamic_crossing` with a mounted LiDAR; checks bit-identical replay without dynamic obstacles |
+| `examples/eval_matrix.py` | 3 controllers × 3 chassis × 10 independent maps at `max_steps=300`; writes Markdown and JSON |
 | `examples/gallery.py` | regenerates the eleven gallery assets (five clips at scenario seed 0, six scenario stills) |
-| `examples/render_demo.py` | 50 steps, 5 PNG frames, and a seven-round render timing |
-| `examples/scenario_demo.py` | `straight`, `corridor`, and `dense_static` for 50 random steps each |
+| `examples/render_demo.py` | 60 steps, 60 PNG frames, hero stills, and a render timing |
+| `examples/scenario_demo.py` | `straight`, `corridor`, and `dense_static` for 50 random steps each, with a mounted LiDAR |
 | `examples/sensors_demo.py` | IMU, wheel odometry, and a parametric LiDAR with latency and dropout |
 
 Run them from the repository root with the same interpreter that has the package
@@ -1137,33 +953,47 @@ installed.
 
 ## Known limitations
 
-1. **Discrete collision test, no swept body.** Collision is a discrete per-step test
+1. **A default environment has no LiDAR, so `d_min` is not a measurement.**
+   `cs.make("ackermann")` assembles no sensor, therefore `info["d_min"]` equals
+   `bridge.max_range` (10.0 m by default) and the obstacle term of the reward
+   degenerates to a constant. Declare `sensors=[cs.Lidar(...)]` to get a real
+   clearance and a non-constant obstacle penalty.
+2. **A controller cannot be built without a chassis.** `PurePursuitController()` and
+   `DwaController()` raise `TypeError` with no `chassis=`/`kind=`, and there is no
+   implicit Ackermann default: a mecanum env driven by an Ackermann-calibrated
+   controller would silently rescale every command. Use
+   `cs.make_controller("pp", env=env)` (or `chassis=env.unwrapped.chassis`), or let
+   `cs.evaluate(env, episodes=...)` bind pure pursuit to the env's own chassis.
+3. **The still-image helper is `cs.snapshot()`, not `cs.render()`.**
+   `chassis_sim.render` is the drawing subpackage, and importing a submodule
+   rebinds the parent attribute of the same name to the module object — any function
+   installed as `chassis_sim.render` would be replaced the first time the renderer is
+   imported (which `cs.record()` does). Hence the distinct name; the drawing
+   primitives stay in `chassis_sim.render`.
+4. **`ChassisSimEnv(device=...)` is an inert parameter.** The encoder moved into the
+   actor long before 1.0.0 and the observation builder is pure NumPy, so `device` no
+   longer selects anything; the parameter is kept only so existing training scripts
+   that forward it keep importing. Do not expect it to move computation.
+5. **Discrete collision test, no swept body.** Collision is a discrete per-step test
    of the current body OBB against circles and oriented rectangles (with a safety
    margin); there is no swept-body / continuous (CCD) check, so a fast reverse can
    still clip a corner between ticks.
-2. **A missing LiDAR frame inside the observation is zero-order hold, not truth.**
-   When a frame is delayed or dropped, the `Lidar` observation segment repeats the
-   last valid scan (and falls back to `max_range` before the first one). The
-   observation carries no validity bit, so a consumer cannot tell a fresh scan from
-   a held one without reading `scan_meta` in `info`.
-3. **DWA gear selection is off by default.** `gear_mode="auto"` truncates
+6. **A missing LiDAR frame inside the observation is zero-order hold, not truth.**
+   When a frame is delayed or dropped, the `LidarSegment` repeats the last valid scan
+   (and falls back to `max_range` before the first one). The observation carries no
+   validity bit, so a consumer cannot tell a fresh scan from a held one without
+   reading `scan_meta` in `info`.
+7. **DWA gear selection is off by default.** `gear_mode="auto"` truncates
    candidates to one direction and is sensitive to `heading_lookahead`; with the
    discrete collision test above, a hard gear choice can collide during a maneuver
    that a full-range candidate set would avoid.
-4. **`get_scan()` metadata is historical.** The convenience helper returns the ten
-   classic LaserScan keys with the fixed constants 180 rays, π FOV, 10 m maximum
-   range, and 0.05 m minimum range. Parameterized LiDAR settings (rays, FOV, range,
-   latency, dropout) are reported only in `info["scan"]["scan_meta"]`.
-5. **No camera.** There is no RGB, depth, or segmentation sensor.
-6. **Sensors enter the observation only on request.** IMU and wheel odometry are
-   reported through `info` only, and LiDAR only joins the observation vector when a
-   `LidarSegment` names it.
-7. **One map per core scenario.** Core scenarios are fixed YAML maps; only the
+8. **No camera.** There is no RGB, depth, or segmentation sensor.
+9. **One map per core scenario.** Core scenarios are fixed YAML maps; only the
    planning scenarios (and a custom callable) produce a new map per episode.
-8. **Gallery clips are a 12 fps sample of a 10 Hz loop.** A clip skips ticks between
-   frames and plays faster than real time, so it is an illustration of the behaviour,
-   not a record of the control sequence; re-run `examples/gallery.py` to regenerate
-   the frames from the current code.
+10. **Gallery clips are a 12 fps sample of a 10 Hz loop.** A clip skips ticks
+    between frames and plays faster than real time, so it is an illustration of the
+    behaviour, not a record of the control sequence; re-run `examples/gallery.py` to
+    regenerate the frames from the current code.
 
 ## License, contributing, and citation
 
@@ -1172,7 +1002,7 @@ MIT. See `LICENSE`.
 Tests and lint:
 
 ```bash
-pytest -q
+env -u PYTHONPATH pytest -q
 ruff check .
 ```
 
@@ -1193,8 +1023,6 @@ If you use this package in academic work, cite the repository:
 
 ---
 
-All numbers in this README were measured on 2026-11-04 (UTC) with Python 3.12.0,
-NumPy 1.26.4, and Gymnasium 1.3.0, on version 0.2.1. The default observation is 128
-values on the two 2-action chassis and 129 on the mecanum. The evaluation matrix
-uses ten independent maps, `max_steps=500`, and `base_seed=0`. The code blocks in
-this file are executed as written in the repository's verification pass.
+The header, the installation section and every version string name 1.0.0. Every
+`python` block in this README was executed as written; the `text` block under each
+one is that run's stdout.

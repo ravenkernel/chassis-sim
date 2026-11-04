@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from chassis_sim.envs.reward import RewardCalculator
+from chassis_sim.reward import RewardCalculator
 
 
 class TestTerminalRewards:

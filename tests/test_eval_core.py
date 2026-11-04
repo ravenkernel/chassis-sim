@@ -130,7 +130,7 @@ def test_wilson_interval_known_values_and_edges():
 
 def test_evaluate_aggregates_outcomes():
     env = _StubEnv([("goal", 3), ("collision", 2), ("timeout", 4), ("truncated", 5)])
-    result = evaluate(env, _StubController(), n_episodes=4, seed=7)
+    result = evaluate(env, _StubController(), episodes=4, seed=7)
     assert result.n == 4
     assert (result.successes, result.collisions, result.timeouts) == (1, 1, 2)
     assert result.success_rate == pytest.approx(0.25)
@@ -146,7 +146,7 @@ def test_evaluate_aggregates_outcomes():
 def test_evaluate_seeds_paths_and_lifecycle():
     env = _StubEnv([("goal", 2)] * 3)
     ctrl = _StubController()
-    evaluate(env, ctrl, n_episodes=3, seed=10)
+    evaluate(env, ctrl, episodes=3, seed=10)
     assert env.seeds == [10, 11, 12]
     assert ctrl.resets == 3
     assert len(ctrl.paths) == 3
@@ -162,7 +162,7 @@ def test_evaluate_closes_env_created_by_factory():
         created.append(env)
         return env
 
-    result = evaluate(factory, _StubController(), n_episodes=1, seed=0)
+    result = evaluate(factory, _StubController(), episodes=1, seed=0)
     assert result.n == 1
     assert len(created) == 1
     assert created[0].closed is True
@@ -170,16 +170,16 @@ def test_evaluate_closes_env_created_by_factory():
 
 def test_max_steps_truncates_and_counts_as_timeout():
     env = _StubEnv([("timeout", 999)])
-    result = evaluate(env, _StubController(), n_episodes=1, seed=0, max_steps=5)
+    result = evaluate(env, _StubController(), episodes=1, seed=0, max_steps=5)
     ep = result.episodes[0]
     assert ep.steps == 5
     assert ep.timeout is True
     assert ep.success is False and ep.collision is False
 
 
-def test_n_episodes_must_be_positive():
+def test_episodes_must_be_positive():
     with pytest.raises(ValueError):
-        evaluate(_StubEnv([]), _StubController(), n_episodes=0)
+        evaluate(_StubEnv([]), _StubController(), episodes=0)
 
 
 def test_controller_observation_exposes_pose_and_dt():
@@ -193,7 +193,7 @@ def test_controller_observation_exposes_pose_and_dt():
 def test_result_to_dict_is_json_serialisable():
     env = _StubEnv([("goal", 2), ("collision", 3)])
     result = evaluate(
-        env, _StubController(), n_episodes=2, seed=0, labels=("ctrl", "ackermann")
+        env, _StubController(), episodes=2, seed=0, labels=("ctrl", "ackermann")
     )
     payload = result.to_dict()
     assert payload["controller"] == "ctrl"
@@ -248,7 +248,7 @@ def test_evaluate_rejects_controller_calibrated_for_another_chassis(kind):
     try:
         controller = PurePursuitController(chassis=make_chassis(kind))
         with pytest.raises(ValueError) as excinfo:
-            evaluate(env, controller, n_episodes=1, seed=0, max_steps=5)
+            evaluate(env, controller, episodes=1, seed=0, max_steps=5)
     finally:
         env.close()
 
@@ -270,7 +270,7 @@ def test_evaluate_allow_mismatch_warns_without_raising(capsys):
     try:
         controller = PurePursuitController(chassis=make_chassis("ackermann"))
         result = evaluate(
-            env, controller, n_episodes=1, seed=0, max_steps=5, allow_mismatch=True
+            env, controller, episodes=1, seed=0, max_steps=5, allow_mismatch=True
         )
     finally:
         env.close()
@@ -288,7 +288,7 @@ def test_evaluate_accepts_controller_built_from_env_chassis():
     env = ChassisSimEnv("ackermann", max_steps=5)
     try:
         controller = PurePursuitController(chassis=env.unwrapped.chassis)
-        result = evaluate(env, controller, n_episodes=1, seed=0, max_steps=5)
+        result = evaluate(env, controller, episodes=1, seed=0, max_steps=5)
     finally:
         env.close()
 
@@ -300,7 +300,7 @@ def test_evaluate_skips_guard_for_controller_without_limits():
 
     env = ChassisSimEnv("ackermann", max_steps=5)
     try:
-        result = evaluate(env, _NoLimitsController(), n_episodes=1, seed=0, max_steps=5)
+        result = evaluate(env, _NoLimitsController(), episodes=1, seed=0, max_steps=5)
     finally:
         env.close()
 
@@ -365,7 +365,7 @@ def test_evaluate_callable_reset_options_gives_one_map_per_episode():
         return _map_for(index)
 
     result = evaluate(
-        env, _StubController(), n_episodes=3, max_steps=50, reset_options=factory
+        env, _StubController(), episodes=3, max_steps=50, reset_options=factory
     )
     assert seen == [0, 1, 2]
     assert len(env.options_seen) == 3
@@ -384,7 +384,7 @@ def test_fixed_mapping_keeps_legacy_same_map_semantics(capsys):
     """旧写法（固定 dict）不被破坏：n 个回合仍是同一张图，只是现在会告警并标注。"""
     env = _MapStubEnv([("goal", 3), ("goal", 3), ("goal", 3)])
     result = evaluate(
-        env, _StubController(), n_episodes=3, max_steps=50, reset_options=_map_for(4)
+        env, _StubController(), episodes=3, max_steps=50, reset_options=_map_for(4)
     )
     err = capsys.readouterr().err
     assert "[WARN][eval]" in err
@@ -407,7 +407,7 @@ def test_evaluate_callable_returning_same_map_still_warns(capsys):
     result = evaluate(
         env,
         _StubController(),
-        n_episodes=3,
+        episodes=3,
         max_steps=50,
         reset_options=lambda i: _map_for(0),
     )
@@ -423,7 +423,7 @@ def test_evaluate_rejects_non_mapping_from_reset_options_callable():
         evaluate(
             env,
             _StubController(),
-            n_episodes=1,
+            episodes=1,
             max_steps=50,
             reset_options=lambda i: [1, 2, 3],
         )

@@ -7,7 +7,7 @@ a minimum turning radius with natural forward/backward segments.
 """
 import math
 import numpy as np
-from chassis_sim.envs.path_utils import angle_wrap
+from chassis_sim.paths import angle_wrap
 
 
 def reeds_shepp_path(

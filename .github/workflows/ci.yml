@@ -43,3 +43,67 @@ jobs:
           pip install -e ".[dev]"
       - name: Test
         run: pytest -q
+
+  # 静态检查固定一个 Python 档（3.12）：ruff / mypy 的结论应与解释器版本无关，
+  # 规则集本身用 target-version = "py310" 声明语言下限。版本都钉死，避免上游
+  # 新增规则让 PR 莫名变红（升级 ruff / mypy 应是独立的一个 PR）。
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install ruff
+        run: |
+          python -m pip install --upgrade pip
+          pip install "ruff==0.17.3"
+      # 规则集见 pyproject.toml 的 [tool.ruff.lint]；未选中的族在注释里逐条
+      # 记着实测报错数量，属于"补齐后再开"，不是默认关掉。
+      - name: ruff check
+        run: ruff check .
+      # 只报告不修：仓库现码已是 88 列格式，这一步防回退。
+      - name: ruff format --check
+        run: ruff format --check .
+
+  # 类型检查的入口清单写在 pyproject.toml 的 [tool.mypy] files = [...]，
+  # 所以这里不带路径参数；扩围只改 pyproject，不改 workflow。
+  types:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install mypy and typed runtime deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+          pip install "mypy==2.4.1" "types-PyYAML==6.0.12.20261103"
+      - name: mypy
+        env:
+          MYPYPATH: src
+        run: python -m mypy
+
+  # 覆盖率单独一个 job 而不是塞进 test 的 3.12 一档：test 的 matrix 只证明
+  # "三档 Python 都绿"，混入覆盖率会让 3.12 一档多背一条独立的红/绿判据，
+  # 定位变难；单独 job 的耗时与 3.12 档重叠，实际不增加关键路径。
+  # fail_under 的权威值在 pyproject.toml [tool.coverage.report]，命令里再写一遍
+  # 是为了在 PR 的失败日志里直接看到门槛数字。
+  coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,viz,planning]"
+          pip install "pytest-cov==7.1.0"
+      - name: Test with coverage gate
+        run: pytest -q --cov --cov-report=term:skip-covered --cov-fail-under=82

@@ -39,6 +39,7 @@ import pytest
 
 from chassis_sim.bridges import SimpleBridge
 from chassis_sim.chassis import AckermannChassis
+from chassis_sim.sensors import Lidar
 
 _DRL_SIM = "/home/zhao/drl-sim"
 _ENV_YAML = os.path.join(_DRL_SIM, "config", "env.yaml")
@@ -307,7 +308,16 @@ def _replay(golden: dict, chassis_factory=AckermannChassis) -> list:
     params = _golden_params(golden)
     results = []
     for rec in golden["scenarios"]:
-        bridge = SimpleBridge(chassis_factory(), **params)
+        chassis = chassis_factory()
+        front, rear = chassis.lidar_mounts()
+        bridge = SimpleBridge(
+            chassis,
+            sensors=[
+                Lidar("front", mount=front, n_rays=180),
+                Lidar("rear", mount=rear, n_rays=180),
+            ],
+            **params,
+        )
         path = _floats(rec["path"])
         bridge.reset(obstacles=rec["obstacles"], path_waypoints=path)
 
@@ -326,8 +336,9 @@ def _replay(golden: dict, chassis_factory=AckermannChassis) -> list:
             out["poses"].append(
                 [float(bridge._x), float(bridge._y), float(bridge._theta)]
             )
-            out["lidar_front"].append(bridge.get_lidar_front())
-            out["lidar_rear"].append(bridge.get_lidar_rear())
+            reading = bridge.get_sensor_reading()
+            out["lidar_front"].append(reading["front"]["scan"])
+            out["lidar_rear"].append(reading["rear"]["scan"])
             out["odometry"].append(bridge.get_odometry())
             out["collision"].append(bool(bridge.check_collision()))
             out["goal_reached"].append(bool(bridge.check_goal_reached()))

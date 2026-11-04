@@ -1,6 +1,6 @@
 """可组合的原始观测段 —— 有序段列表即拼接顺序。
 
-旧 ObsLayout（src/chassis_sim/envs/observation.py:35）把 9 段顺序写死在 ORDER 里，
+1.0.0 之前库内有一份把 9 段顺序写死的定长布局（已删），
 宽度只能靠 max_path_points / action_dim 两个旋钮缩放。本模块把观测拆成**段对象**：
 每段自己声明 name / dim 并负责 build(ctx)，ObsSpec 只按给定顺序拼接。
 
@@ -25,7 +25,11 @@ _POOL_MODES = ("none", "max", "mean")
 
 @dataclass
 class ObsContext:
-    """段构建的输入；env 侧负责填。字段语义沿用旧 ObservationBuilder。"""
+    """段构建的输入；env 侧由 ContextBuilder 填（见 obs/context.py）。
+
+    path_valid / path_progress 标量或 1 元素数组都接受（ContextBuilder 实际
+    传的是 float32[1]），段侧统一经 _flat_f32 ravel 到 1 维后再用。
+    """
 
     lidar: Mapping[str, np.ndarray]  # 传感器名 -> 原始 ranges
     odom_rel: np.ndarray  # [4] dx_body*10, dy_body*10, v, ω
@@ -34,8 +38,8 @@ class ObsContext:
     act: np.ndarray  # [action_dim] 上一拍动作（已归一化）
     err: np.ndarray  # [2] CTE 归一化, 航向误差
     goal_sig: np.ndarray  # [2] sin/cos(终点航向误差)
-    path_valid: float  # 真实路点占比 [0,1]
-    path_progress: float  # env 真值 arc_completion [0,1]
+    path_valid: float | np.ndarray  # 真实路点占比 [0,1]（标量或 1 元素数组）
+    path_progress: float | np.ndarray  # env 真值 arc_completion [0,1]（同上）
 
 
 def _flat_f32(value, *, dim: int, who: str) -> np.ndarray:
@@ -70,20 +74,26 @@ class Odom(Segment):
         return _flat_f32(ctx.odom_rel, dim=self.dim, who="Odom.build")
 
 
-class Path(Segment):
-    """车体系参考路径（极坐标四通道），每点 4 维。"""
+class PathSegment(Segment):
+    """车体系参考路径（极坐标四通道），每点 4 维。
+
+    1.0.0 起段类名是 `PathSegment`（旧名 `Path` 与 `pathlib.Path` 撞名）。
+    段名仍是 "path"，切片与段序不变。
+    """
 
     name = "path"
 
     def __init__(self, points: int = 30) -> None:
         if not isinstance(points, (int, np.integer)) or points <= 0:
-            raise ValueError(f"Path: points 必须为正整数，得到 {points!r}")
+            raise ValueError(f"PathSegment: points 必须为正整数，得到 {points!r}")
         self.points = int(points)
         self.dim = self.points * 4  # rho, sin_phi, cos_phi, dtheta
 
     def build(self, ctx: ObsContext) -> np.ndarray:
         return _flat_f32(
-            ctx.path_flat, dim=self.dim, who=f"Path(points={self.points}).build"
+            ctx.path_flat,
+            dim=self.dim,
+            who=f"PathSegment(points={self.points}).build",
         )
 
 
@@ -152,7 +162,7 @@ class PathProgress(Segment):
 
     def build(self, ctx: ObsContext) -> np.ndarray:
         arr = _flat_f32(ctx.path_progress, dim=self.dim, who="PathProgress.build")
-        # 与旧 ObsLayout.build 同款夹紧：真值本身已在 [0,1]，这里只把 NaN/越界
+        # 夹紧是观测契约的一部分：真值本身已在 [0,1]，这里只把 NaN/越界
         # 挡在观测之外（观测一写进 buffer 就会污染整个训练）。
         arr = np.nan_to_num(arr, nan=0.0, posinf=1.0, neginf=0.0)
         return np.clip(arr, 0.0, 1.0)
@@ -329,7 +339,12 @@ class ObsSpec:
     def default(action_dim: int = 2, path_points: int = 30) -> ObsSpec:
         """默认 spec = odom + path + goal + act（不含 lidar）。"""
         return ObsSpec(
-            (Odom(), Path(points=path_points), Goal(), Act(action_dim=action_dim))
+            (
+                Odom(),
+                PathSegment(points=path_points),
+                Goal(),
+                Act(action_dim=action_dim),
+            )
         )
 
     def __repr__(self) -> str:

@@ -111,9 +111,8 @@ class SimpleBridge(SensorProvider):
         绝不消耗全局序列，因此开关它们不会平移 domain_rand 的噪声。
     """
 
-    # ── 扫描几何常量：get_scan() 的元数据全部由它们 + max_range 推导 ──────
-    N_LIDAR_RAYS: int = 180  # 单侧 FOV 内的射线数（LiDAR 缓冲区按它预分配）
-    LIDAR_FOV: float = np.pi  # 单侧视场角（弧度）：N_LIDAR_RAYS 条射线铺满它
+    # ── 扫描几何常量（1.0 起雷达只有 get_sensor_reading 一个入口）──────────
+    N_LIDAR_RAYS: int = 180  # 射线缓冲区预分配宽度（传感器射线数可任意）
     RANGE_MIN: float = 0.05  # 最小量程（米）：更近的命中被截到该值（旧桥 :390-392）
 
     def __init__(
@@ -472,99 +471,7 @@ class SimpleBridge(SensorProvider):
         # 传感器在本步位姿/速度确定之后推进（t = _steps * dt，与 sim_time 同源）
         self._update_sensors()
 
-    # ── 传感器 ────────────────────────────────────────────────────────
-
-    def get_lidar_front(self) -> np.ndarray:
-        return self._simulate_lidar(front=True)
-
-    def get_lidar_rear(self) -> np.ndarray:
-        return self._simulate_lidar(front=False)
-
-    def get_scan(self, side: str = "front") -> dict[str, Any]:
-        """返回带 ROS sensor_msgs/LaserScan 元数据的单侧扫描字典。
-
-        键序与字段见 base.SCAN_FIELDS。数值全部由本类的扫描几何常量推导，
-        **没有**手工填的角度：
-
-        * angle_min = 安装朝向偏移 - pi/2（前雷达 -pi/2、后雷达 +pi/2）；
-        * angle_max = angle_min + (N_LIDAR_RAYS - 1) * angle_increment；
-        * angle_increment = (angle_max - angle_min) / (N_LIDAR_RAYS - 1)
-          = LIDAR_FOV / (N_LIDAR_RAYS - 1)——与 _simulate_lidar 里
-          np.linspace(start, start + LIDAR_FOV, N_LIDAR_RAYS, endpoint=True) 的
-          步长是**同一个式子**，因此第 i 条射线的方位角恒等于
-          angle_min + i * angle_increment（约定已写进 SensorProvider.get_scan）；
-        * range_min = RANGE_MIN（= 射线距离下限）、range_max = max_range；
-        * time_increment = scan_time = 0.0 —— 本桥一次调用用**同一帧位姿**发射全部
-          射线（瞬时快照，不建模扫掠时间），故单条射线耗时与整帧耗时精确为 0，
-          不是估算出的硬件参数。
-
-        angle_min / angle_max **不**归一化到 [-pi, pi]（因此后雷达是
-        [pi/2, 3pi/2]）：一旦折叠，angle_max - angle_min 就不再等于 (n-1) *
-        angle_increment，消费方按 angle_min + i * angle_increment 还原方位角会错。
-        需要车体系 [-pi, pi] 方位角时请自行对每根射线归一化。
-
-        Args:
-            side: "front" 或 "rear"。
-
-        Returns:
-            dict[str, Any]：ranges 为 float32 一维数组（长度 N_LIDAR_RAYS）。
-            **无返回用 +inf**：底层 _simulate_lidar 把距离 clip 到
-            [RANGE_MIN, max_range]，饱和读数与"恰好命中 max_range"已不可区分，
-            因此 >= max_range 的读数在 scan 里统一报 +inf，不拿 range_max 冒充
-            有效测距；有限读数与 get_lidar_front() / get_lidar_rear() 逐元素
-            （bit 级）相等，且两个原始方法本身的返回值不变。
-            intensities 恒为 None（不建模回波强度）；frame_id 为
-            "laser_front" / "laser_rear"。
-
-        Raises:
-            ValueError: side 不是 "front" / "rear"（消息里列出合法值）。
-        """
-        if side == "front":
-            angle_off = float(self._front_lidar[2])
-            ranges = self.get_lidar_front()
-        elif side == "rear":
-            angle_off = float(self._rear_lidar[2])
-            ranges = self.get_lidar_rear()
-        else:
-            raise ValueError(
-                f"side 必须是 'front' 或 'rear'，收到 {side!r}（合法值: 'front', 'rear'）"
-            )
-
-        # 无返回语义转换：clip 之后的饱和读数（>= max_range）无法与真实命中区分，
-        # 统一报 +inf（ROS 惯例）；原始饱和值仍由 get_lidar_*() 原样返回，行为不变。
-        ranges = np.where(ranges >= self.max_range, np.inf, ranges).astype(np.float32)
-
-        n_rays = int(self.N_LIDAR_RAYS)
-        angle_min = angle_off - np.pi / 2.0
-        angle_increment = float(self.LIDAR_FOV) / (n_rays - 1)
-        return {
-            "angle_min": float(angle_min),
-            "angle_max": float(angle_min + (n_rays - 1) * angle_increment),
-            "angle_increment": float(angle_increment),
-            "time_increment": 0.0,
-            "scan_time": 0.0,
-            "range_min": float(self.RANGE_MIN),
-            "range_max": float(self.max_range),
-            "ranges": ranges,
-            "intensities": None,
-            "frame_id": f"laser_{side}",
-        }
-
-    def _simulate_lidar(self, *, front: bool) -> np.ndarray:
-        """默认单侧雷达：180 线 × π 视场，行为与加入参数化传感器前逐位相同。
-
-        实际几何全部在 `_cast_rays` 里；这里只是把本桥的历史常量按原值传下去
-        （N_LIDAR_RAYS / LIDAR_FOV / max_range / RANGE_MIN / domain_rand），因此默认
-        调用路径的算术与缓冲区复用方式都没有变化。
-        """
-        return self._cast_rays(
-            front=front,
-            n_rays=int(self.N_LIDAR_RAYS),
-            fov=float(self.LIDAR_FOV),
-            max_range=self.max_range,
-            range_min=self.RANGE_MIN,
-            domain_rand=self._domain_rand,
-        )
+    # ── 传感器读数（雷达只有 get_sensor_reading 一个入口）────────────────
 
     def _ensure_lidar_buffers(self, n_rays: int) -> None:
         """按射线数准备预分配缓冲区（默认 180 时**不**重分配）。"""
@@ -745,7 +652,7 @@ class SimpleBridge(SensorProvider):
         """车体系单射线求交——注入给 `chassis_sim.sensors.SensorSuite` 的 `raycast`。
 
         与 `_cast_rays` 共用同一份算术（圆 / 矩形 / 动态圆 / 四面墙求交 + clip）：
-        几何只有一份实现，参数化传感器与 `get_lidar_front()` 不会各自漂移。区别只在
+        几何只有一份实现，因此不同的传感器之间不会各自漂移。区别只在
         把"一次 n_rays 条均分射线"换成"一条指定方位角、指定原点的射线"，因此本方法
         每次都从头车变换出发（theta / x / y 取自当前步状态）。
 
@@ -756,7 +663,7 @@ class SimpleBridge(SensorProvider):
 
         Returns:
             float：命中距离（米），已 clip 到 [RANGE_MIN, max_range]；无命中时返回
-            max_range（饱和），与 `get_lidar_front()` 的饱和语义一致。
+            max_range（饱和），即"无回波"与"恰好命中量程"不可区分。
         """
         angles = np.array([self._theta + float(angle_rad)], dtype=np.float64)
         distances = self._cast_rays(

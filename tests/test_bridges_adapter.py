@@ -34,8 +34,6 @@ CHASSIS_NAMES = ("ackermann", "diff_drive", "mecanum")
 REQUIRED_MEMBERS = {
     "reset",
     "step",
-    "get_lidar_front",
-    "get_lidar_rear",
     "get_odometry",
     "get_path",
     "get_path_global",
@@ -44,7 +42,6 @@ REQUIRED_MEMBERS = {
     "close",
     "goal_heading",
     "set_dynamic_obstacles",
-    "get_scan",
     "get_sensor_reading",
 }
 
@@ -57,13 +54,10 @@ class _RecordingBridge(SensorProvider):
 
     def __init__(
         self,
-        scan: dict[str, Any] | None = None,
         sensor_reading: dict[str, Any] | None = None,
     ) -> None:
         self.steps: list[np.ndarray] = []
         self.calls: dict[str, int] = {}
-        self.scan = {} if scan is None else scan
-        self.scan_sides: list[str] = []
         self.sensor_reading = sensor_reading
         self.reset_args: tuple[Any, Any, Any] | None = None
 
@@ -82,14 +76,6 @@ class _RecordingBridge(SensorProvider):
     def step(self, action: np.ndarray) -> None:
         self._hit("step")
         self.steps.append(np.array(action, dtype=np.float64, copy=True))
-
-    def get_lidar_front(self) -> np.ndarray:
-        self._hit("get_lidar_front")
-        return np.full(180, 1.5)
-
-    def get_lidar_rear(self) -> np.ndarray:
-        self._hit("get_lidar_rear")
-        return np.full(180, 2.5)
 
     def get_odometry(self) -> np.ndarray:
         self._hit("get_odometry")
@@ -118,11 +104,6 @@ class _RecordingBridge(SensorProvider):
     def goal_heading(self) -> float:
         self._hit("goal_heading")
         return 1.25
-
-    def get_scan(self, side: str = "front") -> dict[str, Any]:
-        self._hit("get_scan")
-        self.scan_sides.append(side)
-        return self.scan[side]
 
     def get_sensor_reading(self) -> dict[str, Any] | None:
         self._hit("get_sensor_reading")
@@ -200,12 +181,6 @@ class _PhysicalAckermannBridge(SensorProvider):
 
     def get_odometry(self) -> np.ndarray:
         return np.array([self._x, self._y, self._theta, self._v, self._omega])
-
-    def get_lidar_front(self) -> np.ndarray:
-        return np.full(180, np.inf)
-
-    def get_lidar_rear(self) -> np.ndarray:
-        return np.full(180, np.inf)
 
     def get_path(self) -> np.ndarray:
         return np.zeros((0, 3))
@@ -451,8 +426,7 @@ def test_all_members_implemented_explicitly_and_forwarded() -> None:
         assert name in PhysicalCommandBridge.__dict__, f"{name} 没有显式实现"
 
     # 3. 逐个调用一次，看记录型替身里都到了
-    scan = {"front": {"ranges": np.zeros(2)}, "rear": {"ranges": np.ones(2)}}
-    inner = _DynamicRecordingBridge(scan=scan)
+    inner = _DynamicRecordingBridge()
     bridge = PhysicalCommandBridge(inner=inner, chassis=AckermannChassis())
 
     obstacles = [{"shape": {"name": "circle"}, "state": [1.0, 2.0, 0.0]}]
@@ -471,8 +445,6 @@ def test_all_members_implemented_explicitly_and_forwarded() -> None:
     ).to_physical(action)
     assert np.array_equal(inner.steps[0], expected)
 
-    bridge.get_lidar_front()
-    bridge.get_lidar_rear()
     bridge.get_odometry()
     bridge.get_path()
     bridge.get_path_global()
@@ -483,7 +455,6 @@ def test_all_members_implemented_explicitly_and_forwarded() -> None:
     specs = [{"shape": "circle"}]
     bridge.set_dynamic_obstacles(specs)
     assert inner.dynamic_specs is specs
-    bridge.get_scan("rear")
     bridge.get_sensor_reading()
 
     assert set(inner.calls) == REQUIRED_MEMBERS
@@ -506,20 +477,11 @@ def test_accepts_non_ackermann_chassis() -> None:
         )
 
 
-def test_get_scan_and_sensor_reading_passthrough() -> None:
-    """get_scan / get_sensor_reading 内层返回什么就透传什么（含 None）。"""
-    front = {"angle_min": -np.pi, "ranges": np.array([1.0, np.inf], np.float32)}
-    rear = {"angle_min": 0.0, "ranges": np.array([2.0], np.float32)}
+def test_sensor_reading_passthrough() -> None:
+    """get_sensor_reading 内层返回什么就透传什么（含 None）。"""
     reading = {"imu": {"ax": 0.1, "yaw_rate": 0.0}}
-    inner = _RecordingBridge(
-        scan={"front": front, "rear": rear}, sensor_reading=reading
-    )
+    inner = _RecordingBridge(sensor_reading=reading)
     bridge = PhysicalCommandBridge(inner=inner, chassis=AckermannChassis())
-
-    assert bridge.get_scan("front") is front
-    assert bridge.get_scan() is front
-    assert bridge.get_scan("rear") is rear
-    assert inner.scan_sides == ["front", "front", "rear"]
 
     assert bridge.get_sensor_reading() is reading
     inner.sensor_reading = None

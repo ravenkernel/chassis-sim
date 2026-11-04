@@ -12,12 +12,56 @@ import numpy as np
 import pytest
 
 from chassis_sim.bridges import SensorProvider
-from chassis_sim.envs import ChassisSimEnv, ObsLayout
+from chassis_sim.chassis import AckermannChassis
+from chassis_sim.envs import ChassisSimEnv
+from chassis_sim.obs import (
+    Act,
+    Err,
+    Goal,
+    GoalSig,
+    LidarSegment,
+    ObsSpec,
+    Odom,
+    PathProgress,
+    PathSegment,
+    PathValid,
+)
 from chassis_sim.scenarios import load_scenario, scenario_to_reset_options
+from chassis_sim.sensors import Lidar
 
-#: 前 360 维是 LiDAR（ObsLayout 的第一段；默认观测已不含 LiDAR，见 _run）
+#: 前 360 维是 LiDAR（显式 9 段 spec 的第一段；默认观测已不含 LiDAR，见 _run）
 N_LIDAR = 360
 STEPS = 14
+
+
+def _spec_494(act_dim: int = 2) -> ObsSpec:
+    """v0.1.4 的 9 段 494 维观测：1.0.0 起只能显式写，库不再内置 494。"""
+    return ObsSpec(
+        (
+            LidarSegment(
+                name="lidar",
+                sensors=("front", "rear"),
+                ray_counts={"front": 180, "rear": 180},
+            ),
+            Odom(),
+            PathSegment(points=30),
+            Goal(),
+            Act(action_dim=act_dim),
+            Err(),
+            GoalSig(),
+            PathValid(),
+            PathProgress(),
+        )
+    )
+
+
+def _lidars() -> list:
+    """前 180 + 后 180 两支 Lidar（mount 取底盘的真实安装位）。"""
+    front, rear = AckermannChassis().lidar_mounts()
+    return [
+        Lidar("front", mount=front, n_rays=180),
+        Lidar("rear", mount=rear, n_rays=180),
+    ]
 
 
 def _options(with_dynamic: bool) -> dict:
@@ -34,9 +78,10 @@ def _run(with_dynamic: bool, steps: int = STEPS) -> tuple[np.ndarray, list[dict]
     env = ChassisSimEnv(
         "ackermann",
         max_steps=steps,
-        # 本用例要读前 360 维 LiDAR ⇒ 显式点名 v0.1.4 的 494 布局
-        # （0.2.0 的默认观测是最小集，不含 lidar 段）
-        obs_spec=ObsLayout(action_dim=2, max_path_points=30).as_spec(),
+        # 本用例要读前 360 维 LiDAR ⇒ 显式点名 v0.1.4 的 9 段 494 观测
+        # （默认观测是最小集，不含 lidar 段；雷达帧来自这两支 Lidar）
+        obs_spec=_spec_494(),
+        sensors=_lidars(),
     )
     try:
         obs, _ = env.reset(seed=0, options=_options(with_dynamic))

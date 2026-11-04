@@ -8,8 +8,10 @@
 * 差速：定常 `(v, ω)` ⇒ 圆弧，半径 = v/ω，每步弦长 = v·dt，总转角 = ω·T；
 * 麦轮：`(v, ω)` 全 0、只有 `vy` ⇒ 纯横移（x 不变，y 走 vy·T）。
 
-外加一份三车型共用的**传感器契约**：LiDAR 形状/量程/dtype、里程计长度、
-路径形状、布尔返回类型 —— 这些与车型无关，任何底盘都该满足。
+外加一份三车型共用的**传感器契约**：
+
+来自 get_sensor_reading 的 LiDAR 形状/量程/dtype、里程计长度、路径形状、布尔返回类型
+—— 这些与车型无关，任何底盘都该满足。
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ import pytest
 
 from chassis_sim.bridges import SimpleBridge
 from chassis_sim.chassis import AckermannChassis, DiffDriveChassis, MecanumChassis
+from chassis_sim.sensors import Lidar
 
 N_STEPS = 100
 DT = 0.1
@@ -33,7 +36,16 @@ _PATH = np.column_stack(
 
 
 def _bridge(chassis) -> SimpleBridge:
-    bridge = SimpleBridge(chassis, dt=DT)
+    # 雷达只有 get_sensor_reading 一个入口 ⇒ 前/后两支 Lidar 必须显式装配
+    front, rear = chassis.lidar_mounts()
+    bridge = SimpleBridge(
+        chassis,
+        dt=DT,
+        sensors=[
+            Lidar("front", mount=front, n_rays=180),
+            Lidar("rear", mount=rear, n_rays=180),
+        ],
+    )
     bridge.reset(obstacles=[], path_waypoints=_PATH)
     return bridge
 
@@ -125,7 +137,10 @@ def test_sensor_contract_all_chassis(factory) -> None:
     for _ in range(10):
         bridge.step(action)
 
-    for lidar in (bridge.get_lidar_front(), bridge.get_lidar_rear()):
+    reading = bridge.get_sensor_reading() or {}
+    assert sorted(reading) == ["front", "rear"]
+    for name in ("front", "rear"):
+        lidar = np.asarray(reading[name]["scan"])
         assert lidar.shape == (180,)
         assert lidar.dtype == np.float32
         assert np.all(lidar >= 0.05) and np.all(lidar <= 10.0)

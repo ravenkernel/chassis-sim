@@ -26,13 +26,12 @@ ReplayRecorder(bridge=None, *, scene=None)
   像素逐位相同（测试比较 numpy 像素数组，不比较文件字节）。
 * 视觉只有一套「浅色演示风」：全部颜色集中在 `render.figure.PALETTE`，
   换风格只改这一处；轴框、刻度、白边全部去掉，画布铺满整图。
-* 场景优先读取桥的公开只读方法 `pose()` 与 `obstacle_shapes()`；桥没有这两个
-  方法时退回 `_x, _y, _theta` 与 `_circle_centers` 等私有快照。渲染层不写回，
-  也不改变桥行为。
+* 场景只读桥的公开方法 `pose()` 与 `obstacle_shapes()`（1.0.0 起不再退回读
+  `_x, _y, _theta` / `_circle_centers` 等私有字段）。渲染层不写回，也不改变桥行为。
 * HUD 的 step / t / v / ω / d_min 全部来自 `get_odometry()`、`sim_time` 与
   场景几何；取不到的读数显示 `—`，不编数字。
-* LiDAR 默认关闭；开启时前后两个 180 线扫描合计最多等间隔抽样 60 条
-  （单条 LineCollection，向量化绘制）。
+* LiDAR 默认关闭；开启时从 `get_sensor_reading()` 的 lidar 条目合计最多等间隔
+  抽样 36 条（`_MAX_LIDAR_RAYS`，单条 LineCollection，向量化绘制）。
 * 轨迹尾迹最多保留最后 500 个位姿点，用一条 LineCollection 做透明度渐隐。
 * 参考路径统一青色（lw 2.0 + 下垫光晕），倒车段用虚线区分；终点画金色星形。
 

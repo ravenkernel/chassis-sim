@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "chassis-sim"
-version = "0.2.1"
+version = "1.0.0"
 description = "Gymnasium environments for Ackermann, differential-drive and mecanum chassis"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -35,6 +35,9 @@ dependencies = [
     "pyyaml>=6.0",
 ]
 
+[project.scripts]
+chassis-sim = "chassis_sim.cli:main"
+
 [project.urls]
 Homepage = "https://github.com/zhao6663/chassis-sim"
 Repository = "https://github.com/zhao6663/chassis-sim"
@@ -58,3 +61,94 @@ chassis_sim = ["py.typed", "config/*.yaml", "scenarios/data/*.yaml"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+
+# ---------------------------------------------------------------------------
+# ruff：静态检查 + 格式检查（CI 的 lint job 跑 `ruff check .` 与
+# `ruff format --check .`，两条都必须 exit 0）。
+# ---------------------------------------------------------------------------
+[tool.ruff]
+# 与 requires-python 的最低档一致：py310 语法是底线（不是本机 3.12）。
+target-version = "py310"
+# 现码本来就是按 88 列格式化的（ruff format 默认值），改它等于重排全仓。
+line-length = 88
+[tool.ruff.lint]
+# 现状全过（ruff 0.17.3 实测 exit 0）。选的都是稳定规则：
+# pycodestyle 错误档(E4/E7/E9)、pyflakes(F)、尾随空白(W)、import 排序(I)、
+# 容器推导(C4)、pyupgrade(UP)、PIE/ISC/TID/FA/RSE/PGH/A（打包/导入/废弃式写法）。
+select = ["E4", "E7", "E9", "F", "W", "I", "C4", "UP", "PIE", "ISC", "TID", "FA", "RSE", "PGH", "A"]
+# E402 一共 13 处，且全是有意为之：tests/test_render_*.py 里
+# `pytest.importorskip("matplotlib")` 之后的导入，以及
+# src/chassis_sim/planning/map_generator.py:12-19 的可选 numba 导入。
+# 本波无权改源码 ⇒ 先关 E402；给这些位置加 noqa 或重构后可删掉本行。
+ignore = ["E402"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["chassis_sim"]
+
+# 本波**没选**的规则族与实测报错数（`ruff check . --select <族> --target-version py310`，
+# 换言之"选了就 red"，而本波不许改源码）。下一波按"先修后选"逐族打开：
+#   硬骨头：RUF 9322（其中 RUF001/002/003 中文标点 9310）、D 2180、ANN 1149、S 1488
+#   体量中等：COM 442、PLR 417、TRY 173、EM 180、SLF 102、Q 98、PT 96、T20 82(print)、
+#            E501 195（>88 列）、PLC 69、B 39、PTH 17、C90 16
+#   小尾巴：N 11、NPY 10、SIM 9、PERF 6、ERA 6、ICN 5、RET 2、DTZ 2、FURB 1
+
+# ---------------------------------------------------------------------------
+# mypy：初始清单只覆盖 4 个纯计算子包（13 个文件），CI 的 types job 跑
+# `MYPYPATH=src mypy`（本文件已用 files = 固定清单，无需再传路径）。
+# 下一波（1.1.0）扩到 controllers / eval / scenarios；全包现状 90 处错误
+# （49 个源文件，W1/E1 配置层落地后实测），分布：planning 27、envs 23、
+# controllers 21、render 13、api 4、sensors / obs / eval / config 各 1。
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.10"
+files = [
+    "src/chassis_sim/chassis",
+    "src/chassis_sim/obs",
+    "src/chassis_sim/sensors",
+    "src/chassis_sim/config",
+]
+warn_unused_ignores = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_configs = true
+show_error_codes = true
+# 未注解函数体也要查（实测干净）；warn_unreachable 同理。
+check_untyped_defs = true
+warn_unreachable = true
+
+# 3 处历史遗留，按"模块 + 单条错误码"最小化压掉（本波无源码写入权）。
+# 每处都精确到一行 —— 修掉即删除对应 overrides，禁止往这里追加新条目：
+#   src/chassis_sim/obs/spec.py:229      只读 property 覆盖可写属性      [override]
+#   src/chassis_sim/sensors/suite.py:176 float(float | None)            [arg-type]
+#   src/chassis_sim/config/schema.py:154 tuple 变长赋值                  [assignment]
+[[tool.mypy.overrides]]
+module = "chassis_sim.obs.spec"
+disable_error_code = ["override"]
+
+[[tool.mypy.overrides]]
+module = "chassis_sim.sensors.suite"
+disable_error_code = ["arg-type"]
+
+[[tool.mypy.overrides]]
+module = "chassis_sim.config.schema"
+disable_error_code = ["assignment"]
+
+# ---------------------------------------------------------------------------
+# coverage：CI 的 coverage job 跑
+#   pytest -q --cov --cov-report=term:skip-covered --cov-fail-under=82
+# bare --cov 的测量范围取自 [tool.coverage.run] 的 source。
+# pytest-cov **会**读下面的 fail_under（实测：fail_under=79 时部分跑打印
+# "FAIL Required test coverage of 79.0% not reached. Total coverage: 1.44%"），
+# 命令里再写一遍 --cov-fail-under 只是让 PR 日志直接看到门槛数字；
+# 两处数字必须同步改。
+# ---------------------------------------------------------------------------
+[tool.coverage.run]
+source = ["chassis_sim"]
+
+[tool.coverage.report]
+# 实测（2026-11-04，Python 3.12 + pytest-cov 7.1.0，W1/E1 配置层落地之后）：
+# 7154 statements / 1233 missing = 82.76% ⇒ 向下取整 82。
+# 余量 0.76pp（≈54 条语句）。补测最划算的一处仍是 0% 的
+# src/chassis_sim/envs/privileged.py（88 条）。
+# 后续波次新增代码后按同一规则重测、重取整（只升不降前先补测）。
+fail_under = 82

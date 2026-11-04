@@ -1,10 +1,10 @@
 """env ↔ ObsSpec 接线（S3）：默认最小集、ObsLayout.as_spec() 的 494 回归、
 Custom 段端到端、以及 lidar 段引用传感器套件读数。
 
-口径（0.2.0）：env 默认观测是**最小集** odom+path+goal+act（128/128/129 维）。
-v0.1.4 的 494 维（360 雷达 + err/goal_sig/path_valid/path_progress）在 0.2.0 里
-是**显式选择**：obs_spec=ObsLayout(2, 30).as_spec()。库不内置这个 RL 预设 ——
-默认值要能被任何底盘直接用，而 494 固定假设 180+180 线雷达。
+口径（1.0.0）：env 默认观测是**最小集** odom+path+goal+act（128/128/129 维）。
+v0.1.4 的 494 维（360 雷达 + err/goal_sig/path_valid/path_progress）只能由**显式
+9 段 ObsSpec** 表达（ObsLayout 已删）：库里没有 494 预设 —— 494 固定假设
+180+180 线雷达，而这两支雷达现在是真实装配的传感器（Lidar("front") / Lidar("rear")）。
 """
 
 from __future__ import annotations
@@ -12,13 +12,57 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from chassis_sim.envs.chassis_env import ChassisSimEnv
-from chassis_sim.envs.observation import ObservationBuilder, ObsLayout
-from chassis_sim.obs import Custom, LidarSegment, ObsSpec, Odom
+from chassis_sim.chassis import AckermannChassis
+from chassis_sim.envs import ChassisSimEnv
+from chassis_sim.obs import (
+    Act,
+    Custom,
+    Err,
+    Goal,
+    GoalSig,
+    LidarSegment,
+    ObsSpec,
+    Odom,
+    PathProgress,
+    PathSegment,
+    PathValid,
+)
+from chassis_sim.obs.context import ContextBuilder
 from chassis_sim.sensors import Lidar
 
 ENV_DIMS = {"ackermann": 128, "diff_drive": 128, "mecanum": 129}
 ACTION_DIMS = {"ackermann": 2, "diff_drive": 2, "mecanum": 3}
+
+
+def _spec_494(act_dim: int = 2) -> ObsSpec:
+    """v0.1.4 的 9 段 494 维观测：1.0.0 起只能显式写，库不再内置 494。"""
+    return ObsSpec(
+        (
+            LidarSegment(
+                name="lidar",
+                sensors=("front", "rear"),
+                ray_counts={"front": 180, "rear": 180},
+            ),
+            Odom(),
+            PathSegment(points=30),
+            Goal(),
+            Act(action_dim=act_dim),
+            Err(),
+            GoalSig(),
+            PathValid(),
+            PathProgress(),
+        )
+    )
+
+
+def _lidars() -> list:
+    """前 180 + 后 180 两支 Lidar（mount 取底盘的真实安装位）。"""
+    front, rear = AckermannChassis().lidar_mounts()
+    return [
+        Lidar("front", mount=front, n_rays=180),
+        Lidar("rear", mount=rear, n_rays=180),
+    ]
+
 
 DEFAULT_SLICES = {
     "ackermann": {
@@ -41,7 +85,7 @@ DEFAULT_SLICES = {
     },
 }
 
-LEGACY_DIM = 494  # ObsLayout(action_dim=2, max_path_points=30).total_dim
+LEGACY_DIM = 494  # 9 段显式 spec（lidar 360 + odom 4 + path 120 + goal 2 + act 2 + err 2 + goal_sig 2 + 1 + 1）
 
 
 class TestDefaultSpecIsMinimal:
@@ -80,10 +124,32 @@ class TestDefaultSpecIsMinimal:
             env.close()
 
 
-class TestLayoutAsSpecIsByteIdentical:
+class TestExplicit494Spec:
+    """494 = 显式 9 段 spec（库不再内置）：段序/切片/逐位都对齐主仓实测金标准。"""
+
+    GOLDEN_SLICES = {
+        "lidar": slice(0, 360),
+        "odom": slice(360, 364),
+        "path": slice(364, 484),
+        "goal": slice(484, 486),
+        "act": slice(486, 488),
+        "err": slice(488, 490),
+        "goal_sig": slice(490, 492),
+        "path_valid": slice(492, 493),
+        "path_progress": slice(493, 494),
+    }
+
+    @staticmethod
+    def _frames() -> dict:
+        """写死的 360 维雷达帧（前 180 + 后 180），不用 RNG。"""
+        return {
+            "front": np.linspace(1.0, 2.0, 180, dtype=np.float32),
+            "rear": np.linspace(2.0, 1.0, 180, dtype=np.float32),
+        }
+
     @staticmethod
     def _raws(steps: int = 12):
-        """同一 env 的一串 raw obs（同 seed ⇒ 与训练侧取到的输入同分布）。"""
+        """同一 env 的一串 raw 读数（同 seed ⇒ 与训练侧取到的输入同分布）。"""
         env = ChassisSimEnv("ackermann")
         try:
             env.reset(seed=7)
@@ -95,66 +161,54 @@ class TestLayoutAsSpecIsByteIdentical:
             env.close()
         return raws
 
-    def test_as_spec_matches_layout_build(self):
-        """ObsLayout.build(...) 与 as_spec().resolved().build(ctx) 逐字节相同。"""
-        layout = ObsLayout(action_dim=2, max_path_points=30)
-        resolved = layout.as_spec().resolved()
-        assert resolved.total_dim == layout.total_dim == LEGACY_DIM
-        assert resolved.describe() == {
-            name: slice(s, e) for name, (s, e) in layout._slices.items()
-        }
+    def test_spec_is_494_and_matches_golden_slices(self):
+        resolved = _spec_494().resolved()
+        assert resolved.total_dim == LEGACY_DIM
+        assert resolved.describe() == self.GOLDEN_SLICES
 
-        legacy = ObservationBuilder(max_path_points=30)
-        spec_builder = ObservationBuilder(max_path_points=30)
+    def test_context_builder_is_deterministic_across_instances(self):
+        """同一串 raw 喂两个独立 ContextBuilder ⇒ 拼出的观测逐字节相同。"""
         err = np.array([0.3, -0.2], dtype=np.float32)
         goal_sig = np.array([0.1, 0.99], dtype=np.float32)
+        a, b = ContextBuilder(max_path_points=30), ContextBuilder(max_path_points=30)
+        resolved = _spec_494().resolved()
         worst = 0.0
         for raw in self._raws():
-            old = legacy.build(
-                raw,
-                prev_delta=0.1,
-                prev_v=0.4,
-                err_signals=err,
-                goal_signals=goal_sig,
-                path_progress=0.42,
-            )
-            ctx = spec_builder.build_context(
-                raw,
-                prev_delta=0.1,
-                prev_v=0.4,
-                err_signals=err,
-                goal_signals=goal_sig,
-                path_progress=0.42,
-            )
-            assert set(ctx.lidar) == {"legacy_front", "legacy_rear"}
-            new = resolved.build(ctx)
-            assert old.tobytes() == new.tobytes()
-            worst = max(worst, float(np.max(np.abs(old - new))))
+            out = []
+            for builder in (a, b):
+                ctx = builder.build_context(
+                    raw,
+                    prev_delta=0.1,
+                    prev_v=0.4,
+                    err_signals=err,
+                    goal_signals=goal_sig,
+                    path_progress=0.42,
+                    lidar=self._frames(),
+                )
+                out.append(resolved.build(ctx))
+            assert out[0].tobytes() == out[1].tobytes()
+            worst = max(worst, float(np.max(np.abs(out[0] - out[1]))))
         assert worst == 0.0
 
-    def test_env_accepts_legacy_layout_as_explicit_spec(self):
-        """env 侧显式选择 494：维度与切片都和 ObsLayout 完全对齐。"""
-        env = ChassisSimEnv("ackermann", obs_spec=ObsLayout(2, 30).as_spec())
+    def test_env_accepts_explicit_494_spec(self):
+        """env 侧显式选择 494：维度/切片都对金标准，lidar 段取自两支 Lidar。"""
+        env = ChassisSimEnv("ackermann", obs_spec=_spec_494(), sensors=_lidars())
         try:
             assert env.observation_space.shape == (LEGACY_DIM,)
-            layout = ObsLayout(action_dim=2, max_path_points=30)
-            assert env.obs_spec_describe() == {
-                name: slice(s, e) for name, (s, e) in layout._slices.items()
-            }
+            assert env.obs_spec_describe() == self.GOLDEN_SLICES
             obs, _ = env.reset(seed=0)
             assert obs.shape == (LEGACY_DIM,)
-            # lidar 段用的是 legacy 双雷达（前 180 + 后 180），与旧 build 一致
-            lidar = np.asarray(obs[:360], dtype=np.float32)
-            front = np.asarray(env.bridge.get_lidar_front(), dtype=np.float32)
-            rear = np.asarray(env.bridge.get_lidar_rear(), dtype=np.float32)
-            assert np.array_equal(lidar, np.concatenate([front, rear]))
+            reading = env.bridge.get_sensor_reading()
+            front = np.asarray(reading["front"]["scan"], dtype=np.float32)
+            rear = np.asarray(reading["rear"]["scan"], dtype=np.float32)
+            assert np.array_equal(obs[:360], np.concatenate([front, rear]))
         finally:
             env.close()
 
     @pytest.mark.parametrize("name", sorted(ENV_DIMS))
-    def test_legacy_spec_dims(self, name):
-        """494 不是默认值，但显式要就该拿到 494（act 段宽度随底盘动作维）。"""
-        env = ChassisSimEnv(name, obs_spec=ObsLayout(2, 30).as_spec())
+    def test_explicit_spec_dims(self, name):
+        """494 不是默认值，但显式要就该拿到 494（act 段宽度不超过 action_dim）。"""
+        env = ChassisSimEnv(name, obs_spec=_spec_494(), sensors=_lidars())
         try:
             assert env.observation_space.shape == (LEGACY_DIM,)
         finally:
