@@ -3,14 +3,14 @@
 [English](https://github.com/ravenkernel/chassis-sim/blob/main/README.md) | 简体中文
 
 [![CI](https://github.com/ravenkernel/chassis-sim/actions/workflows/ci.yml/badge.svg)](https://github.com/ravenkernel/chassis-sim/actions/workflows/ci.yml)
-[![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue)](https://github.com/ravenkernel/chassis-sim)
+[![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue)](https://github.com/ravenkernel/chassis-sim)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 **三种底盘的小型 Gymnasium 基准** —— 阿克曼转向、差速驱动、麦轮 —— 归一化动作、
 纯 NumPy 仿真器、可组合的观测 spec、声明式传感器、参考控制器，以及一套
 “建环境 / 评测 / 录制”各一行就够的公共 API。
 
-版本 1.0.0。Python 3.10+。
+版本 1.x 线（具体版本见 `pyproject.toml`）。Python 3.10+。
 
 ## 概览
 
@@ -30,16 +30,16 @@
 
 默认观测是四段 spec `ObsSpec.default(action_dim, points=30)` —— 里程计、参考路径、
 目标点、上一步归一化动作 —— 所以在两个 2 维动作的底盘上是 128 维，麦轮是 129 维。
-0.1.x 那个 494 维向量不再是默认值，1.0.0 也不内置 494 预设：九段 `ObsSpec` 由使用
+0.1.x 那个 494 维向量不再是默认值，1.x 也不内置 494 预设：九段 `ObsSpec` 由使用
 者自己写，见[观测与动作契约](#观测与动作契约)。
 
 ## 安装
 
-1.0.0 已上 PyPI：
+1.x 已上 PyPI：
 
 ```bash
 pip install "chassis-sim[viz]"
-pip install "chassis-sim[viz]==1.0.0"   # 锁定版本
+pip install "chassis-sim[viz]==X.Y.Z"   # 锁定到某个 tag
 ```
 
 只要核心依赖就去掉 `[viz]`；Hybrid-A* 地图生成器在 `[planning]` 里。想按 tag 锁定
@@ -67,7 +67,7 @@ pip install -e ".[dev]"
 只给 GIF 导出用，两者都在 `viz` 里 —— `cs.record()`、`cs.snapshot()` 和
 `examples/gallery.py` 依赖的就是它。
 
-1.0.0 只内置一个仿真后端：纯 NumPy 的 `SimpleBridge`。不需要任何外部仿真器，也没
+1.x 只内置一个仿真后端：纯 NumPy 的 `SimpleBridge`。不需要任何外部仿真器，也没
 有对应的 optional extra：ROS 2 / Gazebo 一类后端不在本包范围内。
 `PhysicalCommandBridge` 是把自己的物理引擎接进同一套观测/奖励流水线的正式接缝。
 
@@ -239,7 +239,7 @@ describe: {'odom': slice(0, 4, None), 'path': slice(4, 124, None), 'goal': slice
 
 0.2.x 的 494 维布局是一个九段 spec（`lidar 360 + odom 4 + path 120 + goal 2 +
 act 2 + err 2 + goal_sig 2 + path_valid 1 + path_progress 1`，`action_dim=2` 时）。
-1.0.0 把这些段一个不落地留着，但不内置由它们拼成的预设 —— 因为 LiDAR 段只有在你
+1.x 把这些段一个不落地留着，但不内置由它们拼成的预设 —— 因为 LiDAR 段只有在你
 显式声明了它要读的传感器之后才有意义。自己把 spec 写出来：
 
 ```python
@@ -357,7 +357,7 @@ inner received: [[0.1722752169535286, 0.6]]
 | `info[<轮速计名>]` | `{"v_left", "v_right", "v", "t"}` |
 
 `bridge.get_sensor_reading()` 是唯一的原始入口，返回的就是 `info` 各键取自的那份
-字典。1.0.0 没有按传感器类型分开的便利访问器：一个方法覆盖所有传感器，名字和参数都
+字典。1.x 没有按传感器类型分开的便利访问器：一个方法覆盖所有传感器，名字和参数都
 不影响调用。不配传感器时 `info` 里一个传感器键都没有。
 
 ```python
@@ -924,6 +924,9 @@ all non-empty: True
 
 MIT，见 `LICENSE`。
 
+贡献流程 —— 开发环境、提交 PR 前必须通过的闸门、以及一份能过审的 PR 长什么样 —— 见
+`CONTRIBUTING.md`。安全问题走 `SECURITY.md` 里写的私密渠道，不要开公开 issue。
+
 测试与 lint：
 
 ```bash
@@ -931,9 +934,10 @@ env -u PYTHONPATH pytest -q
 ruff check .
 ```
 
-CI 在 Python 3.10、3.11、3.12 上跑测试套件（`.github/workflows/ci.yml`）。
+CI 在 Python 3.10、3.11、3.12、3.13 上跑测试套件（`.github/workflows/ci.yml`）。
 
-如果本包对学术工作有帮助，请引用本仓库：
+如果本包对学术工作有帮助，请引用本仓库 —— 同一份元数据也以机器可读形式写在
+[`CITATION.cff`](CITATION.cff) 里，GitHub 的“Cite this repository”按钮读的就是它：
 
 ```bibtex
 @software{chassis_sim_2026,
@@ -947,5 +951,6 @@ CI 在 Python 3.10、3.11、3.12 上跑测试套件（`.github/workflows/ci.yml`
 
 ---
 
-标题、安装段与所有版本口径都指向 1.0.0。本文每个 `python` 代码块都按原样执行过，
-其下的 `text` 块就是那次运行的 stdout。
+本文所有版本口径都跟着发布 tag 走：版本号本身只写在 `pyproject.toml`（唯一来源），
+本文不写死任何版本号。本文每个 `python` 代码块都按原样执行过，其下的 `text` 块就是
+那次运行的 stdout。

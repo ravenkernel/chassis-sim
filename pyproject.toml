@@ -4,21 +4,23 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "chassis-sim"
-version = "1.0.1"
+version = "1.0.2"
 description = "Gymnasium environments for Ackermann, differential-drive and mecanum chassis"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "ravenkernel", email = "30620187+ravenkernel@users.noreply.github.com" }]
 license = "MIT"
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Science/Research",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
 ]
 keywords = [
     "reinforcement-learning",

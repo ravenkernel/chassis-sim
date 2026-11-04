@@ -3,7 +3,7 @@
 English | [简体中文](https://github.com/ravenkernel/chassis-sim/blob/main/README.zh-CN.md)
 
 [![CI](https://github.com/ravenkernel/chassis-sim/actions/workflows/ci.yml/badge.svg)](https://github.com/ravenkernel/chassis-sim/actions/workflows/ci.yml)
-[![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue)](https://github.com/ravenkernel/chassis-sim)
+[![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue)](https://github.com/ravenkernel/chassis-sim)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 **A small, dependency-light Gymnasium benchmark for three chassis types** — Ackermann
@@ -11,7 +11,7 @@ steering, differential drive, and mecanum — with normalized actions, a pure-Nu
 simulator, a composable observation spec, declarative sensors, reference controllers,
 and a one-line API that makes, evaluates and records an environment.
 
-Version 1.0.0. Python 3.10+.
+Version 1.x line (the exact release lives in `pyproject.toml`). Python 3.10+.
 
 ## At a glance
 
@@ -35,16 +35,16 @@ The default observation is the four-segment spec
 `ObsSpec.default(action_dim, points=30)` — odometry, reference path, goal, and the
 previous normalized action — so it is 128 values wide on the two 2-action chassis and
 129 on the mecanum. The 494-value vector of the 0.1.x line is no longer the default and
-1.0.0 ships no built-in 494 preset: you write the nine-segment `ObsSpec` yourself, as
+1.x ships no built-in 494 preset: you write the nine-segment `ObsSpec` yourself, as
 shown under [Observation and action contract](#observation-and-action-contract).
 
 ## Installation
 
-1.0.0 is on PyPI:
+The 1.x line is on PyPI:
 
 ```bash
 pip install "chassis-sim[viz]"
-pip install "chassis-sim[viz]==1.0.0"   # pin the release
+pip install "chassis-sim[viz]==X.Y.Z"   # pin to a release tag
 ```
 
 Drop the `[viz]` suffix for a core install, or use `[planning]` for the Hybrid-A* map
@@ -74,7 +74,7 @@ The core install depends only on `numpy`, `gymnasium`, and `pyyaml`. `matplotlib
 needed only for rendering and `imageio` only for GIF export; both come with the `viz`
 extra, which is what `cs.record()`, `cs.snapshot()` and `examples/gallery.py` need.
 
-The 1.0.0 line ships exactly one built-in simulator: the pure-NumPy `SimpleBridge`.
+The 1.x line ships exactly one built-in simulator: the pure-NumPy `SimpleBridge`.
 No external simulator is required, and there is no optional extra for one: ROS 2 and
 Gazebo style backends are out of scope. `PhysicalCommandBridge` is the documented seam
 for plugging your own physics engine into the same observation/reward pipeline.
@@ -263,7 +263,7 @@ describe: {'odom': slice(0, 4, None), 'path': slice(4, 124, None), 'goal': slice
 
 The 0.2.x 494-value layout was a nine-segment spec
 (`lidar 360 + odom 4 + path 120 + goal 2 + act 2 + err 2 + goal_sig 2 + path_valid 1
-+ path_progress 1`, for `action_dim=2`). 1.0.0 keeps every one of those segments but
++ path_progress 1`, for `action_dim=2`). 1.x keeps every one of those segments but
 ships no preset built from them, because the LiDAR segment only makes sense when you
 declare the sensors it reads. Write the spec out:
 
@@ -387,7 +387,7 @@ the sensor name**, and never enter the observation by themselves:
 | `info[<wheel name>]` | `{"v_left", "v_right", "v", "t"}` |
 
 `bridge.get_sensor_reading()` is the single raw entry point and returns the same
-dictionary the `info` keys are taken from. 1.0.0 has no per-sensor convenience
+dictionary the `info` keys are taken from. 1.x has no per-sensor convenience
 accessor: one method covers every sensor, whatever its name or parameters. With no
 sensors configured `info` carries no sensor keys at all.
 
@@ -1007,6 +1007,10 @@ installed.
 
 MIT. See `LICENSE`.
 
+Contributing — the development environment, the exact gates your pull request must
+pass, and what a reviewable PR looks like — is in `CONTRIBUTING.md`. Security reports
+go through the private channel described in `SECURITY.md`, never a public issue.
+
 Tests and lint:
 
 ```bash
@@ -1014,10 +1018,12 @@ env -u PYTHONPATH pytest -q
 ruff check .
 ```
 
-CI runs the test suite on Python 3.10, 3.11, and 3.12
+CI runs the test suite on Python 3.10, 3.11, 3.12, and 3.13
 (`.github/workflows/ci.yml`).
 
-If you use this package in academic work, cite the repository:
+If you use this package in academic work, cite the repository — the same metadata is
+machine-readable in [`CITATION.cff`](CITATION.cff), which is what GitHub's "Cite this
+repository" button reads:
 
 ```bibtex
 @software{chassis_sim_2026,
@@ -1031,6 +1037,7 @@ If you use this package in academic work, cite the repository:
 
 ---
 
-The header, the installation section and every version string name 1.0.0. Every
-`python` block in this README was executed as written; the `text` block under each
-one is that run's stdout.
+Every version string in this file tracks the release tag it was cut with: the version
+number itself is written only in `pyproject.toml`, which is the single source of truth,
+and no version number is hard-coded here. Every `python` block in this README was
+executed as written; the `text` block under each one is that run's stdout.

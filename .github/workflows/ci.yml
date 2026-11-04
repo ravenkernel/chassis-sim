@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -88,7 +88,7 @@ jobs:
         run: python -m mypy
 
   # 覆盖率单独一个 job 而不是塞进 test 的 3.12 一档：test 的 matrix 只证明
-  # "三档 Python 都绿"，混入覆盖率会让 3.12 一档多背一条独立的红/绿判据，
+  # "四档 Python 都绿"，混入覆盖率会让 3.12 一档多背一条独立的红/绿判据，
   # 定位变难；单独 job 的耗时与 3.12 档重叠，实际不增加关键路径。
   # fail_under 的权威值在 pyproject.toml [tool.coverage.report]，命令里再写一遍
   # 是为了在 PR 的失败日志里直接看到门槛数字。

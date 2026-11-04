@@ -1,0 +1,23 @@
+# 本地便利钩子。**权威闸门**是 CONTRIBUTING.md 里那五条命令（与
+# .github/workflows/ci.yml 逐条对应）：pre-commit 只是把其中两条 ruff 检查
+# 提前到提交时，覆盖面不等于 CI（没有 mypy、没有覆盖率门槛）。
+repos:
+  # 与 CI 的 lint job 钉同一个版本（ci.yml: pip install "ruff==0.17.3"）。
+  # 升 ruff 应当是一个独立的 PR，两边同时改。
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.3
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  # 与 ruff 的规则集不重叠的通用卫生检查：行尾空白、文件末尾换行、
+  # YAML / TOML 语法。check-yaml 只认 *.yaml / *.yml，因此不会去解析
+  # CITATION.cff（那是 CFF 特有的字段集，不是 GitHub Actions 配置）。
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml

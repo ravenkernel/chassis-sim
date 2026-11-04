@@ -1,7 +1,35 @@
 # Changelog
 
 All notable changes to `chassis-sim`. This file documents the changes present in
-the working tree; the most recent release is `1.0.1`.
+the working tree; the most recent release is `1.0.2`.
+
+## 1.0.2
+
+### Changed
+
+- **The metadata now describes what the package is.** Classifiers say
+  `Development Status :: 5 - Production/Stable` instead of `4 - Beta`, and gained
+  `Programming Language :: Python :: 3.13` and `Typing :: Typed`. The CI test matrix
+  grew a 3.13 entry in the same commit, so the new claim is backed by an actual run
+  rather than assertion.
+- **The docs no longer hard-code the release they describe.** Sentences that described the
+  current product now say `1.x`, and the install example uses `==X.Y.Z` instead of a pinned
+  literal: `pyproject.toml` is the single source of truth, so no version number rots inside
+  prose on every release.
+
+### Added
+
+- `CITATION.cff` — gives GitHub's "Cite this repository" button for academic users.
+- `CONTRIBUTING.md` — the five gates with their exact commands, checked line-by-line against
+  `.github/workflows/ci.yml`, plus the repository conventions (Chinese comments and error
+  messages, no lowering of the coverage floor, both READMEs kept in sync).
+- `SECURITY.md` — supported range, private reporting through GitHub Security Advisories,
+  response targets, and what is explicitly out of scope.
+- `.github/ISSUE_TEMPLATE/{bug_report,feature_request}.yml` — issue forms that ask for the
+  version, Python, OS and a minimal reproduction.
+- `.pre-commit-config.yaml` — ruff 0.17.3 plus pre-commit-hooks.
+
+No functional changes: the package code is identical to 1.0.1.
 
 ## 1.0.1
 

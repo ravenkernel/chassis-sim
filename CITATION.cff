@@ -1,0 +1,25 @@
+cff-version: 1.2.0
+message: "If you use this software in academic work, please cite it as below."
+type: software
+title: "chassis-sim: Gymnasium environments for Ackermann, differential-drive and mecanum chassis"
+abstract: >-
+  A small, dependency-light Gymnasium benchmark for three chassis types — Ackermann
+  steering, differential drive and mecanum — with normalized actions, a pure-NumPy
+  simulator, a composable observation spec, declarative sensors, reference controllers
+  and a one-line API that makes, evaluates and records an environment.
+authors:
+  - family-names: ravenkernel
+    email: 30620187+ravenkernel@users.noreply.github.com
+version: "1.0.2"
+date-released: "2026-11-04"
+url: "https://github.com/ravenkernel/chassis-sim"
+repository-code: "https://github.com/ravenkernel/chassis-sim"
+license: MIT
+keywords:
+  - reinforcement-learning
+  - robotics
+  - simulation
+  - gymnasium
+  - ackermann
+  - differential-drive
+  - mecanum

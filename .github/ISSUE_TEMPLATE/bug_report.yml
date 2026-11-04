@@ -1,0 +1,77 @@
+name: Bug report
+description: Something does not behave the way the README or the docstrings say it does
+title: "[bug] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. A minimal reproduction is what makes it fixable — a
+        script that runs on its own, not a fragment of a larger training loop.
+
+        **Security problems do not belong here.** See
+        [SECURITY.md](https://github.com/ravenkernel/chassis-sim/blob/main/SECURITY.md)
+        for the private channel.
+  - type: input
+    id: version
+    attributes:
+      label: chassis-sim version
+      description: 'Output of `python -c "import chassis_sim; print(chassis_sim.__version__)"`, or the tag you checked out.'
+      placeholder: 1.0.1
+    validations:
+      required: true
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      description: Output of `python -V`.
+      placeholder: "3.12.0"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "Ubuntu 22.04"
+    validations:
+      required: true
+  - type: dropdown
+    id: extras
+    attributes:
+      label: Installed extras
+      description: Which form of the install reproduces it? A core-only repro and a full one are different bugs.
+      options:
+        - "[dev,viz,planning] (full development install)"
+        - "[viz] (from PyPI)"
+        - core only
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: The smallest self-contained script (or `chassis-sim` invocation) that shows the problem. Include the config or scenario file it needs, inline.
+      render: python
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What you expected, and where that expectation comes from (a README section, a docstring, an earlier issue).
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What happened instead — the full traceback rather than its last line, plus the observation and `info` values if they matter.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Gymnasium version, whether it also reproduces on another chassis id, and what you already ruled out.
+    validations:
+      required: false

@@ -1,0 +1,57 @@
+name: Feature request
+description: Propose a capability, a new chassis, or a change to the public API
+title: "[feature] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        chassis-sim is deliberately small: one built-in simulator, one observation
+        contract, and a documented seam (`PhysicalCommandBridge`) for anything heavier.
+        A request that fits that shape is much easier to accept than one that does not,
+        so please say how it fits.
+  - type: input
+    id: version
+    attributes:
+      label: chassis-sim version you are using
+      description: 'Output of `python -c "import chassis_sim; print(chassis_sim.__version__)"`.'
+      placeholder: 1.0.1
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you are trying to do and what stops you today. A concrete use case beats an abstract wish.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: The API you have in mind — a signature, an environment id, a config key. If you already worked around it locally, say how.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Existing pieces of the API that nearly do it, and why they fall short — `ObsSpec`, a custom `Chassis` or `PhysicalCommandBridge` may already be the extension point.
+    validations:
+      required: false
+  - type: dropdown
+    id: breaking
+    attributes:
+      label: Would this break existing code?
+      options:
+        - No — additive only
+        - Yes — it changes or removes something public
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Prior art in other Gymnasium packages, papers, or links.
+    validations:
+      required: false
