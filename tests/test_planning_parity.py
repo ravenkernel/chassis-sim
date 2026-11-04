@@ -21,6 +21,8 @@
 （numpy 1.x + 特定 CPU）录的，换 numpy 版本 / SIMD 实现后字节不再逐位复现，
 但数学等价，那不该红。所以默认档比 `path_samples`（可做容差的最小参照物），
 位级 sha256 只在 `CHASSIS_STRICT_GOLDEN=1` 的严格档里断言。
+`cusp_rejections` 同理进严格档：它是离散计数，两个判据都拿 float 与固定阈值比
+大小，差一个 ulp 就能让一次候选被拒或不被拒，跨平台差 1 属正常（见 `_mismatches`）。
 """
 
 from __future__ import annotations
@@ -229,7 +231,6 @@ _EXACT_FIELDS = (
     "n_obstacles",
     "path_dtype",
     "path_shape",
-    "cusp_rejections",
 )
 
 
@@ -265,6 +266,21 @@ def _mismatches(want: dict, got: dict) -> list[str]:
         )
 
     if _strict_mode():
+        # cusp_rejections 是**离散计数**，只在严格档里比：它的两个判据
+        # （min_cusp_fold_arc=0.8 m、min_cusp_leg_separation=0.35 m）都拿
+        # float 距离/弧长与固定阈值比大小，差一个 ulp 就能让一次候选被拒或不被拒。
+        # 实测（CI run 41844230510，macOS/Windows 首跑）：同一个 case 的
+        # obstacles / path / heading 全在 1e-9 内一致，只有计数器差 1（1 vs 0、
+        # 1 vs 2）—— "同一条路径、不同的重试次数"，不是移植错了。
+        # 真正有意义的跨平台不变量不是这个数字，而是"产出的路径本身不含违规折返"，
+        # 那条由 tests/test_planning_core.py::test_cusp_filter_effective_on_generated_paths
+        # 独立断言（三平台都过）。
+        if want.get("cusp_rejections") != got.get("cusp_rejections"):
+            bad.append(
+                f"  cusp_rejections: 主仓 {want.get('cusp_rejections')!r} vs "
+                f"本仓 {got.get('cusp_rejections')!r}"
+                f"（{STRICT_ENV}=1 才断言：阈值比较对 ulp 敏感，跨平台差 1 属正常）",
+            )
         for key in ("path_sha256", "obstacles_sha256"):
             if want.get(key) != got.get(key):
                 bad.append(
@@ -283,9 +299,9 @@ def _mismatches(want: dict, got: dict) -> list[str]:
 def test_generate_matches_upstream_golden(case: dict) -> None:
     """同 stage 同 seed：结构精确，heading / path_samples 按 1e-9 容差。
 
-    位级 sha256 只在 CHASSIS_STRICT_GOLDEN=1 时断言：golden 的字节是主仓在本机
-    （numpy 1.x + 特定 CPU）录的，跨 numpy 版本 / SIMD 实现不再逐位复现 ——
-    数学等价却 ulp 不同，不是移植错了。
+    位级 sha256 与 cusp_rejections 只在 CHASSIS_STRICT_GOLDEN=1 时断言：golden 的
+    字节是主仓在本机（numpy 1.x + 特定 CPU）录的，跨 numpy 版本 / SIMD 实现不再
+    逐位复现；计数器还受固定阈值比较的 ulp 影响 —— 数学等价却差 1，不是移植错了。
     """
     got = _observe(MapGenerator, _CURRICULUM, int(case["stage"]), int(case["seed"]))
     want = {k: v for k, v in case.items() if k not in ("stage", "seed")}

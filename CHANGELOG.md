@@ -27,6 +27,14 @@ the working tree; the most recent release is `2.0.0`.
   arrays: a scalar `python-version` keeps the YAML valid but makes GitHub reject the whole
   workflow (the run then fails with zero jobs and no logs), so `tests/test_ci_workflow.py`
   pins that shape as well as the job's `shell: bash` steps.
+- **The planning parity golden compares `cusp_rejections` only in strict mode.** That
+  count is discrete: both of its criteria (`min_cusp_fold_arc`, `min_cusp_leg_separation`)
+  compare a float against a fixed threshold, so a single ulp decides whether one candidate
+  is rejected. On the first macOS/Windows run the generated obstacles, path and headings
+  matched inside `1e-9` while the counter read 1 vs 0 and 1 vs 2 — the same path after a
+  different number of retries, not a porting error. `CHASSIS_STRICT_GOLDEN=1` still
+  asserts it, and the invariant that matters — a generated path contains no violating
+  cusp — is asserted independently by `test_cusp_filter_effective_on_generated_paths`.
 
 ### Fixed
 
