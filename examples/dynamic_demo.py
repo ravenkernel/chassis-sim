@@ -1,6 +1,6 @@
 """动态障碍 demo：dynamic_crossing 的静态 / 动态对照与确定性检查。
 
-运行：env -u PYTHONPATH /home/zhao/anaconda3/envs/drl2/bin/python examples/dynamic_demo.py
+运行（仓库根目录）：python examples/dynamic_demo.py
 
 1.0.0 的规矩：默认环境**不装配任何雷达**。不挂传感器时 info["d_min"] 恒等于
 bridge.max_range，动态/静态对照会退化成两条常数线。所以这里显式挂一支

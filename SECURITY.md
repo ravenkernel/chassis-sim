@@ -2,13 +2,14 @@
 
 ## Supported versions
 
-Security fixes land on the current `1.x` line, in a patch release (`1.0.x`). The `0.x`
-lines are unmaintained and will not receive a fix; upgrade to `1.x` before reporting.
+Security fixes land on the current major line (`3.x`), in a patch release (`3.0.x`).
+Older majors (`0.x` through `2.x`) are unmaintained and will not receive a fix;
+upgrade to `3.x` before reporting.
 
 | Version | Supported |
 | --- | --- |
-| `1.x` | yes |
-| `0.x` | no |
+| `3.x` | yes |
+| `0.x` – `2.x` | no |
 
 ## Reporting a vulnerability
 

@@ -56,6 +56,14 @@ _DEFAULT_SCENARIO = "corridor"
 _DEFAULT_STEPS = 200
 _DEFAULT_EVERY = 4
 
+#: benchmark 子命令的默认值：退化固定直线（地图不随 seed 变，独立样本闸门
+#: 会明确报 maps_independent=False）+ 协议要求的 3 个 seed。
+_BENCH_SCENARIOS: tuple[str, ...] = ("straight",)
+_BENCH_SEEDS: tuple[str, ...] = ("0", "1", "2")
+_BENCH_POLICIES: tuple[str, ...] = ("zero", "random", "pp", "dwa")
+_BENCH_EPISODES = 5
+_BENCH_MAX_STEPS = 200
+
 
 class _CliError(Exception):
     """可预期的用户错误：main() 打印一条消息后 exit 2，不吐 traceback。"""
@@ -187,6 +195,52 @@ def _cmd_eval(args: argparse.Namespace) -> int:
     return _EXIT_OK
 
 
+def _split_tokens(values: list[str]) -> list[str]:
+    """把 "--scenarios a b" 与 "--scenarios a,b" 两种写法归一成列表。"""
+    tokens: list[str] = []
+    for value in values:
+        for token in str(value).split(","):
+            token = token.strip()
+            if token:
+                tokens.append(token)
+    return tokens
+
+
+def _cmd_benchmark(args: argparse.Namespace) -> int:
+    """跑策略 × 场景 × seed 的基准表（独立样本不足时不给 success_ci 数字）。"""
+    scenarios = _split_tokens(args.scenarios)
+    policies = _split_tokens(args.policies)
+    try:
+        seeds = [int(token) for token in _split_tokens(args.seeds)]
+    except ValueError:
+        raise _CliError(f"--seeds 需要整数，收到 {args.seeds!r}") from None
+    for name in scenarios:
+        _check_scenario(name)
+
+    from .eval import POLICY_KINDS, benchmark
+
+    unknown = [name for name in policies if name not in POLICY_KINDS]
+    if unknown:
+        raise _CliError(f"未知策略 {unknown}；可用：{', '.join(POLICY_KINDS)}")
+    out = None if args.out == "-" else args.out
+    try:
+        result = benchmark(
+            policies,
+            scenarios,
+            seeds=seeds,
+            episodes=args.episodes,
+            chassis=args.chassis,
+            max_steps=args.max_steps,
+            out=out,
+        )
+    except ValueError as exc:  # 未知车型 / 空 seeds / 重复 seed 等用户输入错误
+        raise _CliError(str(exc)) from None
+    print(result.to_markdown())
+    if result.markdown_path:
+        print(f"markdown: {result.markdown_path}")
+    return _EXIT_OK
+
+
 def _cmd_render(args: argparse.Namespace) -> int:
     scenario = _check_scenario(args.scenario)
     _require_viz("render 子命令")
@@ -269,6 +323,59 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     evaluated.add_argument("--seed", type=int, default=0, help="起始种子（默认 0）")
     evaluated.set_defaults(handler=_cmd_eval)
+
+    benched = sub.add_parser(
+        "benchmark",
+        help="策略 × 场景 × seed 的基准表（zero/random/pp/dwa）",
+        description=(
+            "在 held-out 场景 × 多个 seed 上跑基线，输出逐格"
+            "（策略, 场景, seed）与跨 seed 汇总两张 Markdown 表。"
+            "distinct_maps < 回合数时 success_ci 不给数字"
+            "（maps_independent=False），协议要求 >= 3 个 seed。"
+        ),
+    )
+    benched.add_argument(
+        "--scenarios",
+        nargs="+",
+        default=list(_BENCH_SCENARIOS),
+        help=(
+            "场景名或 YAML 路径，空格或逗号分隔（默认 straight：退化固定直线，"
+            "地图不随 seed 变 ⇒ 会明确报 maps_independent=False）"
+        ),
+    )
+    benched.add_argument(
+        "--seeds",
+        nargs="+",
+        default=list(_BENCH_SEEDS),
+        help="seed 列表，空格或逗号分隔（默认 0 1 2；协议要求 >= 3 个）",
+    )
+    benched.add_argument(
+        "--episodes",
+        type=_positive_int,
+        default=_BENCH_EPISODES,
+        help=f"每格回合数（默认 {_BENCH_EPISODES}）",
+    )
+    benched.add_argument(
+        "--policies",
+        nargs="+",
+        default=list(_BENCH_POLICIES),
+        help=f"策略名，空格或逗号分隔（默认 {' '.join(_BENCH_POLICIES)}）",
+    )
+    benched.add_argument(
+        "--chassis", default="ackermann", help="车型（默认 ackermann）"
+    )
+    benched.add_argument(
+        "--max-steps",
+        type=_positive_int,
+        default=_BENCH_MAX_STEPS,
+        help=f"单回合步数上限（默认 {_BENCH_MAX_STEPS}）",
+    )
+    benched.add_argument(
+        "--out",
+        default="benchmark.md",
+        help="Markdown 表输出路径（默认 benchmark.md；'-' = 只打印不落盘）",
+    )
+    benched.set_defaults(handler=_cmd_benchmark)
 
     rendered = sub.add_parser("render", help="把当前画面存成 PNG")
     rendered.add_argument(

@@ -35,7 +35,8 @@ ReplayRecorder(bridge=None, *, scene=None)
 * 轨迹尾迹最多保留最后 500 个位姿点，用一条 LineCollection 做透明度渐隐。
 * 参考路径统一青色（lw 2.0 + 下垫光晕），倒车段用虚线区分；终点画金色星形。
 
-`render_scene`（Scene 输入，无需桥）与 `save_figure` 一并导出，供回放层复用。
+`render_scene`（Scene 输入，无需桥）、`render_to_array`（内存像素，喂
+env.render）与 `save_figure` 一并导出，供回放层复用。
 """
 
 from __future__ import annotations
@@ -45,6 +46,7 @@ from .figure import (
     render_episode_frames,
     render_frame,
     render_scene,
+    render_to_array,
     render_to_png,
     save_figure,
 )
@@ -57,6 +59,7 @@ __all__ = [
     "render_episode_frames",
     "render_frame",
     "render_scene",
+    "render_to_array",
     "render_to_png",
     "save_figure",
     "save_gif",

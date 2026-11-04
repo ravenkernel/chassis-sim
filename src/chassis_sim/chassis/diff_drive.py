@@ -11,7 +11,7 @@ from __future__ import annotations
 import numpy as np
 from gymnasium import spaces
 
-from .base import Chassis, ChassisCommand
+from .base import Chassis, ChassisCommand, WheelKinematics
 
 
 class DiffDriveChassis(Chassis):
@@ -23,11 +23,17 @@ class DiffDriveChassis(Chassis):
         wheelbase: float = 0.145,
         v_max: float = 1.0,
         omega_max: float = 1.0,
+        track_width: float | None = None,
     ) -> None:
         self.wheelbase = float(wheelbase)
         self.v_max = float(v_max)
         self.v_min = -self.v_max
         self.omega_max = float(omega_max)
+        # 轮距：左右驱动轮中心线间距（米）。None ⇒ 取车体宽（0.20），与
+        # env.yaml 的 robot.shape.width 和 SimpleBridge 的 WheelOdom 缺省轮距同源。
+        self.track_width = float(self.width if track_width is None else track_width)
+        if self.track_width <= 0.0:
+            raise ValueError(f"track_width 必须是正数，收到 {self.track_width!r}")
         # 动作是归一化量（与阿克曼/麦轮逐位同界），物理范围 [v_min, v_max] /
         # ±omega_max 只在 command() 的映射里施加。
         self._space = spaces.Box(
@@ -46,6 +52,27 @@ class DiffDriveChassis(Chassis):
         v = a0 * (self.v_max if a0 >= 0.0 else -self.v_min)
         return ChassisCommand(v=v, omega=a1 * self.omega_max, vy=0.0)
 
+    def wheel_kinematics(self, cmd: ChassisCommand) -> WheelKinematics:
+        """左右驱动轮线速度 (m/s)（只读；不参与位姿积分）。
+
+        差速运动学的逆解，b = track_width：
+
+            v_left  = v − ω·b/2
+            v_right = v + ω·b/2
+
+        （ω > 0 = 逆时针 = 左转 ⇒ 右轮更快，与 integrate() 的 θ += ω·dt 同号。）
+        steering_left / steering_right 恒为 None：差速底盘没有转向轮，转向完全由
+        左右轮速差产生。注意这里是**轮缘线速度**；要轮角速度请除以轮半径。
+        """
+        half = 0.5 * self.track_width
+        v = float(cmd.v)
+        omega = float(cmd.omega)
+        return WheelKinematics(
+            kind="diff_drive",
+            wheel_left=v - omega * half,
+            wheel_right=v + omega * half,
+        )
+
     def _limits(self) -> dict:
         return {
             "v_min": self.v_min,
@@ -59,6 +86,7 @@ class DiffDriveChassis(Chassis):
             "wheelbase": self.wheelbase,
             "v_max": self.v_max,
             "omega_max": self.omega_max,
+            "track_width": self.track_width,
             # 契约键（键名不改）：差速不适用 ⇒ None
             "delta_max": None,
             "curvature_action": None,

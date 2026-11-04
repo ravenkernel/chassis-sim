@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "chassis-sim"
-version = "2.0.0"
+version = "3.0.0"
 description = "Gymnasium environments for Ackermann, differential-drive and mecanum chassis"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -47,9 +47,22 @@ Issues = "https://github.com/ravenkernel/chassis-sim/issues"
 Changelog = "https://github.com/ravenkernel/chassis-sim/releases"
 
 [project.optional-dependencies]
-planning = ["numba>=0.56"]
+# Numba 0.60.0 是第一个提供 NumPy 2.0 二进制支持的版本；更早的 numba 与
+# numpy>=2 组合在 import 阶段就失败（PyPI 元数据：0.60.0 要求 numpy<2.1，
+# 0.59.x 只支持 NumPy 1.x）。
+planning = ["numba>=0.60"]
 viz = ["matplotlib>=3.7", "rich>=13.0", "imageio>=2.28"]
-dev = ["pytest>=7.0", "ruff>=0.4"]
+# dev 必须自带 CI 的 types / coverage 闸门用到的工具：装完 .[dev] 就能照
+# CONTRIBUTING 直接跑 mypy / pytest --cov，不必再单独 pip install。
+# mypy / pytest-cov / types-PyYAML 钉死版本，与 ci.yml 里原来的单独安装
+# 保持一致 —— 升级它们应当是一个独立的 PR，而不是让上游新版本把 PR 弄红。
+dev = [
+    "pytest>=7.0",
+    "ruff>=0.4",
+    "mypy==2.4.1",
+    "pytest-cov==7.1.0",
+    "types-PyYAML==6.0.12.20261103",
+]
 
 [tool.setuptools]
 package-dir = { "" = "src" }

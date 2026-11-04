@@ -81,7 +81,7 @@ def test_diff_drive_straight() -> None:
 
 
 def test_diff_drive_circle() -> None:
-    """定常 (v, ω) ⇒ 半径 r = v/ω 的圆弧（Euler 折线，半径误差 O(dθ²)）。"""
+    """定常 (v, ω) ⇒ 精确半径 r = v/ω 的圆弧（2026-11-05 起闭式积分）。"""
     v, omega = 0.5, 0.5
     bridge = _bridge(DiffDriveChassis())
     poses = _run(bridge, np.array([v, omega]))
@@ -92,26 +92,19 @@ def test_diff_drive_circle() -> None:
     expected = (total_turn + np.pi) % (2.0 * np.pi) - np.pi
     assert abs(wrapped - expected) < 1e-12
 
-    # Euler 折线的顶点落在**半径略大**的精确圆上：
-    #   R_d = v·dt / (2·sin(dθ/2))，dθ = ω·dt
-    # 圆心在起点左侧 R_d，并沿起点切向**超前半步**（顶点都在 step 之后采样，
-    # 比连续圆领先 dθ/2）。连续半径 v/ω 只是 dθ → 0 的极限，不能直接断言。
-    d_theta = omega * DT
-    radius_d = v * DT / (2.0 * np.sin(d_theta / 2.0))
-    center = np.array(
-        [
-            2.0 + radius_d * np.sin(d_theta / 2.0),
-            2.0 + radius_d * np.cos(d_theta / 2.0),
-        ]
-    )
+    # 闭式积分：每个采样点都落在**真正的**圆上（圆心在起点左侧 R 处），
+    # 半径误差只剩浮点噪声。旧的 Euler 实现顶点落在 R_d = v·dt/(2·sin(dθ/2))
+    # 的折线圆上（比 R 大半步，差 O(dθ²)），2026-11-05 换积分式前的断言
+    # 正是按那个折线口径写的。
+    center = np.array([2.0, 2.0 + radius])
     dist = np.hypot(poses[:, 0] - center[0], poses[:, 1] - center[1])
-    dev = np.max(np.abs(dist - radius_d))
-    assert dev < 1e-9, f"离散圆半径偏差 {dev}"
-    assert abs(radius_d - radius) < 1e-2, "离散半径应与 v/ω 同量级"
+    dev = np.max(np.abs(dist - radius))
+    assert dev < 1e-12, f"闭式圆周半径偏差 {dev}"
 
-    # 匀速：每步弦长恒等于 v·dt
+    # 弦长 = 2R·sin(ω·dt/2) 的精确式（Euler 下才会恒等于 v·dt）
     steps = np.hypot(np.diff(poses[:, 0]), np.diff(poses[:, 1]))
-    assert np.max(np.abs(steps - v * DT)) < 1e-12
+    chord = 2.0 * radius * np.sin(omega * DT / 2.0)
+    assert np.max(np.abs(steps - chord)) < 1e-12
 
 
 def test_mecanum_strafe() -> None:

@@ -1,7 +1,83 @@
 # Changelog
 
 All notable changes to `chassis-sim`. This file documents the changes present in
-the working tree; the most recent release is `2.0.0`.
+the working tree; the most recent release is `3.0.0`.
+
+## 3.0.0
+
+3.0.0 是 API 稳定线：从这一版起本包承诺 semver，因此 classifier 保持
+`Development Status :: 5 - Production/Stable`，不降级为 Beta。
+
+### Breaking
+
+- **Gymnasium id 由 `-v0` 改成 `-v1`**：`ChassisSim-{Ackermann,DiffDrive,Mecanum}-v0` 不再注册，
+  `gym.make("ChassisSim-Ackermann-v0")` 抛 `gym.error.DeprecatedEnv`，消息里直接点名要用的 `-v1` id。
+  三个 `-v1` id 的 `entry_point`、动作空间与 `max_episode_steps` 与 2.x 相同。
+- **默认场景改为 `dense_static`**：`EnvConfig.default_scenario` 默认 `"dense_static"`，`reset()` 不带
+  显式 seed 时每回合重掷地图（`default_scenario=None` 才回到 2.x 的 `straight` 直线兜底）。
+  2.x 里 `reset()` 拿到的是固定直线场景，所以这既是默认值变更，也会改变无 seed 训练的分布。
+- **`observation_space` 从无界 `Box(±inf)` 变成全有限**：各段按物理上界声明——`path` 段的 ρ 上界是
+  `world_diag + lookahead + 0.1 = 34.24213790893555`、角度段 π、归一化段 `1 + 1 ulp = 1.0000001192092896`；
+  非零有限界各放宽 1 ulp。真正越界的观测值才被 clip，并在 `info["obs_clipped"]` 给出计数（计数为 0 时该键不出现）。
+  依赖 `low`/`high` 为 `inf` 的包装器要改用新值。
+- **闭式积分替换 Euler 步进**：同一动作序列下位姿会变——圆周 max-radial 误差 `5.04e-2` → `3.33e-16` m，
+  60 步开环序列的 xy 最大差 `0.0403` m，θ 通道逐位不变；`|ω·dt| ≤ 1.49e-8`（`sqrt(float64 eps)`）时仍走
+  与 2.x **逐位相同**的 Euler 分支。用 2.x 生成的 golden 必须重录：本仓 `tests/data/ackermann_golden.json`
+  已重录，旧轨迹以 `poses_euler_legacy` 保留并与 HEAD 的 poses `np.array_equal=True`。
+
+### Added
+
+- **观测段可声明物理上界**：新增 `BoundContext`（`dt` / `v_max` / `v_min` / `vy_max` / `omega_max` /
+  `lookahead` / `world_diag` / `lidar`）与 `ResolvedObsSpec.bounds()`，内置段各自给出界，
+  `Custom` 段也能带自己的界；`observation_space` 由这些界拼成，不再是无界 Box。
+- **渲染契约**：`render_mode` 支持 `None` / `"human"` / `"rgb_array"`，`render()` 返回 `uint8 (600, 600, 3)`，
+  `metadata` 带 `render_modes` 与 `render_fps = 10`；新增 `chassis_sim.render.render_to_array(bridge, dpi=...)`
+  供无窗口取帧。缺 `matplotlib` 时抛带 `pip install "chassis-sim[viz]"` 的 `ImportError`。
+- **轮级运动学层（纯只读）**：`Chassis.wheel_kinematics(cmd) -> WheelKinematics | None`，给出 Ackermann 的
+  内外前轮角、DiffDrive 的左右轮速、Mecanum 的四轮速（逆 Jacobian）；Ackermann 另有 `front_wheel_angles(delta)`。
+  不支持时返回 `None`，不返回空 dict；积分器与动作语义一律未动。
+- **`integration_substeps` 与 `ccd`**：前者把一步切成 N 段分别积分与碰撞采样，后者在每段内按 `0.02 m` /
+  `0.05 rad` 采样内部位姿（上限 64 个）以拦住薄墙穿透。默认 `1` / `False`，与 2.x 逐位相同；
+  `ccd` 只接受 `bool`，`1` / `0` / `"false"` 一律 `ValueError`。
+- **基准协议**：`chassis_sim.eval.benchmark(...)`（策略 × held-out 场景 × ≥3 seed、同 (场景, seed) 的地图在
+  策略间共享做配对、Wilson 区间、独立样本闸门——地图指纹有重复时 `success_ci` 返回 `None` 而不是给假数字），
+  四基线 `zero` / `random` / `pp` / `dwa`，以及 `python -m chassis_sim benchmark` 子命令。`evaluate()` 签名未动。
+- **`EnvConfig.default_scenario`**：默认 `"dense_static"`，设为 `None` 回到 2.x 的直线兜底。
+- **CI 的 ubuntu 矩阵覆盖 NumPy 1.x 与 2.x 两档**（`matrix.numpy`：`numpy<2` /
+  `numpy>=2`），每档都跑完整套件，并用一步断言实测到的 NumPy 主版本与矩阵档位一致。
+  `3.13 × numpy<2` 显式排除：PyPI 上 cp313 的 NumPy 从 2.1.0 才开始发布
+  （`pip download --python-version 3.13 "numpy<2"` 报
+  `No matching distribution found`），pip 只能退回源码构建。3.13 仍在
+  `numpy>=2` 档真跑：numba 的 cp313 轮子从 0.61.0 起提供，`numba>=0.60` 在
+  3.13 上会解析到 0.61+。
+- **新增 CI 的 `docs` job 与 `tools/check_readme_blocks.py`**：把两份 README 里的
+  `python` 围栏块逐个放进独立子进程执行，任一失败即红；块首行写 `# no-exec`
+  才允许跳过，跳过计入 skipped 而不是 passed，一个 python 块都没有也算失败。
+- **`dev` extra 自带全部闸门工具**：`mypy==2.4.1`、`pytest-cov==7.1.0`、
+  `types-PyYAML==6.0.12.20261103`。`pip install -e ".[dev]"` 之后即可直接跑
+  `MYPYPATH=src mypy` 与 `pytest --cov`，不必再单独装工具。
+
+### Changed
+
+- **planning extra 的 numba 下界 `>=0.56` → `>=0.60`**：Numba 0.60.0 是第一个提供
+  NumPy 2.0 二进制支持的版本，更早的组合与 `numpy>=2` 在 import 阶段就失败。
+  运行依赖 `numpy>=1.24` 不变 —— 1.x 与 2.x 都仍然支持。
+- **README 与包定位改口径**：从 “Gymnasium benchmark” 改为「底盘控制 + 观测/奖励工作台」，并写明三条边界
+  （底盘级运动学而非轮级刚体动力学、碰撞是几何判据无接触力、无 GPU 并行）；`CITATION.cff` 的标题与摘要同步。
+- **闭式积分下的 `integration_substeps` 语义**：精度不再随分段数改善（已到浮点噪声），它的作用只剩提高碰撞采样密度；
+  文档与 docstring 都按这个口径写，不宣称「更高精度积分」。
+
+### Fixed
+
+- **注入的桥不再被塞进 env 的内置场景**：2.x 起 `ChassisSimEnv(bridge=...)` 且 `reset()` 不带 `options` 时，
+  env 会把 `default_scenario` 的 `obstacles` / `path_waypoints` / `initial_heading` 直接递给**调用方的桥**，
+  而桥照单全收、不报错（主仓的 `PhysicalCommandBridge(NumpySimBridge)` 正是这种注入形态）。现在只有
+  「`options is None` + 桥由 env 自造 + 无 `map_generator` + 配了 `default_scenario`」四条全成立才接管；
+  注入桥保留调用方自己的世界。
+- **`render()` 与渲染元数据补齐**：2.x 的 `metadata` 只有 `render_modes=["human"]`、没有 `render_fps`，
+  `env.render()` 直接 `NotImplementedError`，`gym.make(..., render_mode="rgb_array")` 会 `TypeError`。
+  3.0 起三者都按 Gymnasium 契约工作，`gymnasium.utils.env_checker.check_env(..., skip_render_check=False)`
+  在三种底盘上都不再报 `Box maximum value is infinity`。
 
 ## 2.0.0
 

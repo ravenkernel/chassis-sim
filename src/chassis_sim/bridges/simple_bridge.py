@@ -1,20 +1,15 @@
 """SimpleBridge：纯 numpy 的传感器桥，几何与运动学由注入的 `Chassis` 决定。
 
-移植自 `/home/zhao/drl-sim/ros_bridge/numpy_bridge.py`（678 行），**逐行照搬**，
-不重写任何公式。旧桥行号 ↔ 内容：
+公式与旧桥逐位一致，不重写任何一条。各部分职责：
 
-=============  =========================================================
-旧桥位置         内容
-=============  =========================================================
-:30-132        射线求交（圆解析解 / 矩形局部系 slab test）→ raycast.py
-:286-305       障碍物解析（circle / rectangle → numpy 数组）
-:317-357       起始位姿 + 终点鼻向（B5）
-:369-408       步进 + 碰撞 / 到达判定
-:412-513       LiDAR（180 线 × 每侧 π 视场）
-:515-525       里程计（先返回后累积漂移）
-:527-549       get_path / get_path_global
-:582-678       碰撞（4 轴 SAT + 按朝向的边界 AABB）
-=============  =========================================================
+1. 射线求交（圆解析解 / 矩形局部系 slab test）—— `raycast.py`；
+2. 障碍物解析（circle / rectangle → numpy 数组）；
+3. 起始位姿 + 终点鼻向（B5）；
+4. 步进 + 碰撞 / 到达判定；
+5. LiDAR（180 线 × 每侧 π 视场）；
+6. 里程计（先返回后累积漂移）；
+7. get_path / get_path_global；
+8. 碰撞（4 轴 SAT + 按朝向的边界 AABB）。
 
 与旧桥**有意**不同的三处（都是"注入底盘"带来的，不是放宽阈值）：
 
@@ -76,12 +71,12 @@ class SimpleBridge(SensorProvider):
         决定几何（`footprint`）、LiDAR 安装（`lidar_mounts`）与运动学
         （`step` + `integrate`）的底盘实例。
     dt:
-        积分步长（秒），默认 0.1（= 主仓 config/env.yaml 的 world.step_time）。
+        积分步长（秒），默认 0.1（= config/env.yaml 的 world.step_time）。
     world_bounds:
-        `(xmin, xmax, ymin, ymax)`，默认 `(0, 10, 0, 10)`，与主仓 world.width /
-        height = 10 推导出的四面边界墙一致。
+        `(xmin, xmax, ymin, ymax)`，默认 `(0, 10, 0, 10)`，与 env.yaml 的
+        world.width / height = 10 推导出的四面边界墙一致。
     max_range:
-        LiDAR 最大量程（米），默认 10.0（= 主仓 env.yaml sensors.range_max）。
+        LiDAR 最大量程（米），默认 10.0（= env.yaml 的 sensors.range_max）。
     domain_rand:
         是否启用 LiDAR 加性高斯噪声 + 里程计随机游走漂移。随机源由 seed 决定：
         seed 给定时走本桥自持的 Generator，否则吃全局 np.random（历史行为）。
@@ -119,6 +114,19 @@ class SimpleBridge(SensorProvider):
         绝不消耗 domain_rand 的序列，因此开关它们不会平移域随机化的噪声。
         env 侧传入的是**已推导**的整数种子（见 config.schema.resolve_sensor_seed：
         sensor_seed 优先，否则跟随 seed，都没有则 0）。
+    integration_substeps:
+        把一个 `dt` 切成多少个积分子步（默认 1 = 与 1.0.x 逐位相同的单段）。
+        `n > 1` 时每段用 `dt / n` 调一次 `chassis.integrate`，段间把 θ 归一到
+        [-π, π]（等价于每段都是一次完整推进）。对闭式积分这只是同样的算术多做
+        几次（恒定 v/ω 下任意 dt 都已精确到浮点噪声），对将来可能接入的 Euler
+        型通道则把一阶截断误差按 1/n 缩小。必须是 ≥ 1 的整数。
+    ccd:
+        是否启用扫掠段碰撞检测（连续碰撞检测，默认 False = 与 1.0.x 逐位相同）。
+        开启后每个积分段再按 `SWEEP_STEP_M` / `SWEEP_STEP_RAD` 采样若干**内部**
+        位姿，用与段末位姿完全相同的 `_check_collision` 判定；端点本来就由
+        step() 的终点判定覆盖 ⇒ 检出集合是旧行为的**超集**（只会多检出，不会
+        放过原先能检出的碰撞）。动态障碍仍只按段末时刻（t = `_steps` * dt）的
+        位置判定——CCD 不额外积分动态障碍，这是有意的保守近似。
     """
 
     # ── 扫描几何常量（1.0 起雷达只有 get_sensor_reading 一个入口）──────────
@@ -145,9 +153,19 @@ class SimpleBridge(SensorProvider):
         dynamic_obstacles: list | None = None,
         sensors: Sequence[Lidar | Imu | WheelOdom] | None = None,
         sensor_seed: int = 0,
+        integration_substeps: int = 1,
+        ccd: bool = False,
     ) -> None:
         self.chassis = chassis
         self.dt = float(dt)
+        # 加载期校验：子步数必须是 ≥1 的整数（0 会让 dt_sub=inf，负数会让位姿倒退）
+        _n_sub = int(integration_substeps)
+        if _n_sub < 1 or _n_sub != integration_substeps:
+            raise ValueError(
+                f"integration_substeps 必须是 ≥1 的整数，收到 {integration_substeps!r}"
+            )
+        self.integration_substeps = _n_sub
+        self.ccd = bool(ccd)
         self.max_range = float(max_range)
         self.collision_margin = float(collision_margin)
         self.boundary_margin = float(boundary_margin)
@@ -460,10 +478,31 @@ class SimpleBridge(SensorProvider):
         cmd = self.chassis.step(action)
         self._v = float(cmd.v)
         self._omega = float(cmd.omega)
-        self._x, self._y, self._theta = self.chassis.integrate(
-            self._x, self._y, self._theta, cmd, self.dt
-        )
-        self._theta = (self._theta + np.pi) % (2 * np.pi) - np.pi
+        # ── 位姿推进：substeps 段 × (闭式积分 + 可选 CCD) ─────────────
+        # substeps == 1 且 ccd == False 时执行的仍是 1.0.x 的**同一条**语句
+        # （同 dt、同归一顺序），因此逐位不变；分支只是把它显式写出来。
+        swept_collision = False
+        n_sub = self.integration_substeps
+        if n_sub == 1:
+            prev_pose = (self._x, self._y, self._theta)
+            self._x, self._y, self._theta = self.chassis.integrate(
+                self._x, self._y, self._theta, cmd, self.dt
+            )
+            self._theta = (self._theta + np.pi) % (2 * np.pi) - np.pi
+            if self.ccd:
+                swept_collision = self._sweep_collision(prev_pose, self.pose())
+        else:
+            dt_sub = self.dt / n_sub
+            prev_pose = (self._x, self._y, self._theta)
+            for _ in range(n_sub):
+                self._x, self._y, self._theta = self.chassis.integrate(
+                    self._x, self._y, self._theta, cmd, dt_sub
+                )
+                self._theta = (self._theta + np.pi) % (2 * np.pi) - np.pi
+                if self.ccd:
+                    cur_pose = self.pose()
+                    swept_collision |= self._sweep_collision(prev_pose, cur_pose)
+                    prev_pose = cur_pose
         self._vy = float(cmd.vy)
 
         # 动态障碍先推进到与本步位姿**同一时刻**（t = _steps * dt），再判碰撞，
@@ -471,8 +510,9 @@ class SimpleBridge(SensorProvider):
         self._steps += 1
         self._refresh_dynamic()
 
-        # 碰撞 / 目标检测
-        self._collision = self._check_collision()
+        # 碰撞 / 目标检测：先跑终点判定（同时刷新角点缓存），再并上扫掠段的结论。
+        # 端点必被终点判定覆盖 ⇒ `or` 只会把结果从 False 变成 True（超集）。
+        self._collision = self._check_collision() or swept_collision
 
         goal_pt = (
             self._path_waypoints_global[-1, :2]
@@ -859,35 +899,50 @@ class SimpleBridge(SensorProvider):
         cos_t: float,
         sin_t: float,
         cw: np.ndarray,
+        *,
+        origin: tuple[float, float] | None = None,
     ) -> bool:
         """圆（静态/动态共用）与机器人矩形的重叠判定。
 
         两条独立的检查相或：(a) 机器人四个角点落在圆内（`r + margin`）；
         (b) 圆心落在机器人矩形内（`hl/hw` 已含 margin，故半径**不**再加 margin，
         避免 margin 双重计数）。静态圆与动态圆走同一份算数，只是喂进来的数组不同。
+
+        `origin` 是"机器人中心在世界系的位置"，默认取当前位姿；CCD 的扫掠采样会
+        显式传入采样点，否则圆心平移会用当前位姿而角点用的却是采样位姿（半新半旧，
+        判据自相矛盾）。
         """
         margin = self.collision_margin
         diff = cw[:, None, :] - centers[None, :, :]  # (4, C, 2)
         r_eff = radii + margin  # (C,)
         if np.any(np.sum(diff * diff, axis=-1) < r_eff[None, :] ** 2):
             return True
-        local_c = centers - np.array([self._x, self._y])  # (C, 2)
+        ox, oy = (self._x, self._y) if origin is None else origin
+        local_c = centers - np.array([ox, oy])  # (C, 2)
         lx_c = cos_t * local_c[:, 0] + sin_t * local_c[:, 1]
         ly_c = -sin_t * local_c[:, 0] + cos_t * local_c[:, 1]
         return bool(np.any((np.abs(lx_c) < hl + radii) & (np.abs(ly_c) < hw + radii)))
 
-    def _check_collision(self) -> bool:
-        """机器人体与任何障碍物重叠则返回 True。
+    def _check_collision(self, pose: tuple[float, float, float] | None = None) -> bool:
+        """机器人体与任何障碍物重叠则返回 True（CCD 也喂任意位姿进来复用同一份算术）。
 
-        在障碍物维度上完全向量化——没有 Python for 循环。
+        在障碍物维度上完全向量化——没有 Python for 循环。pose 为 None 时用当前位姿，
+        并把四个角点写进 _collision_corners_world 缓存；显式给 pose（CCD 的扫掠采样）
+        时改用一块临时数组，**不**污染缓存——否则外部读到的角点会属于一个从未真正
+        成为当前位姿的中间采样点。
         """
+        if pose is None:
+            x, y, theta = self._x, self._y, self._theta
+            cw = self._collision_corners_world
+        else:
+            x, y, theta = float(pose[0]), float(pose[1]), float(pose[2])
+            cw = np.empty((4, 2), dtype=np.float64)
         # 碰撞检测安全裕度：防止雷达噪声导致轻微触碰即判碰撞
         margin = self.collision_margin
         hl = self._robot_half_l + margin
         hw = self._robot_half_w + margin
-        cos_t = np.cos(self._theta)
-        sin_t = np.sin(self._theta)
-
+        cos_t = np.cos(theta)
+        sin_t = np.sin(theta)
         # ── 机器人角点在世界坐标系中的位置（含安全裕度）───────
         # Bug fix: 旧桥缓存的局部角点不含 margin，直接用则 margin 形同虚设——
         # 机器人角点判定仍是紧贴车身的物理极限，"幽灵车角"。此处用 hl/hw（已加
@@ -895,21 +950,30 @@ class SimpleBridge(SensorProvider):
         cl_m = np.array(
             [[hl, hw], [hl, -hw], [-hl, hw], [-hl, -hw]], dtype=np.float64
         )  # (4, 2) with margin
-        self._collision_corners_world[:, 0] = (
-            self._x + cos_t * cl_m[:, 0] - sin_t * cl_m[:, 1]
-        )
-        self._collision_corners_world[:, 1] = (
-            self._y + sin_t * cl_m[:, 0] + cos_t * cl_m[:, 1]
-        )
-        cw = self._collision_corners_world  # (4, 2)
+        cw[:, 0] = x + cos_t * cl_m[:, 0] - sin_t * cl_m[:, 1]
+        cw[:, 1] = y + sin_t * cl_m[:, 0] + cos_t * cl_m[:, 1]
 
         # ── 机器人 vs 圆形（静态 + 动态共用同一判定）──────────────
         if len(self._circle_radii) > 0 and self._circles_overlap_robot(
-            self._circle_centers, self._circle_radii, hl, hw, cos_t, sin_t, cw
+            self._circle_centers,
+            self._circle_radii,
+            hl,
+            hw,
+            cos_t,
+            sin_t,
+            cw,
+            origin=(x, y),
         ):
             return True
         if len(self._dyn_radii) > 0 and self._circles_overlap_robot(
-            self._dyn_centers, self._dyn_radii, hl, hw, cos_t, sin_t, cw
+            self._dyn_centers,
+            self._dyn_radii,
+            hl,
+            hw,
+            cos_t,
+            sin_t,
+            cw,
+            origin=(x, y),
         ):
             return True
 
@@ -922,8 +986,8 @@ class SimpleBridge(SensorProvider):
             cos_rt = np.cos(self._rect_thetas)  # (M,)
             sin_rt = np.sin(self._rect_thetas)  # (M,)
             # 中心差: rect - robot
-            dx_c = self._rect_centers[:, 0] - self._x  # (M,)
-            dy_c = self._rect_centers[:, 1] - self._y  # (M,)
+            dx_c = self._rect_centers[:, 0] - x  # (M,)
+            dy_c = self._rect_centers[:, 1] - y  # (M,)
 
             # 轴 1: 机器人局部 X = (cos_t, sin_t)
             d1 = np.abs(cos_t * dx_c + sin_t * dy_c)
@@ -961,14 +1025,58 @@ class SimpleBridge(SensorProvider):
         # 旧实现用 hl 判 x、hw 判 y，与 θ 无关：θ=90° 时车身沿 y 的半宽其实
         # 是 hl=0.22（含 margin）却按 hw=0.13 判 ⇒ 车尾可侵入墙 0.09 m 而不判
         # 碰撞。改用旋转后的 AABB 半宽/半高（|cosθ|·hl+|sinθ|·hw 等）。
-        # ⚠ 地图生成侧的 _check_path_footprint 是同一份逻辑（"照抄"关系，参考
-        #   路径复验用），**两处必须同改**，否则复验会放行 env 判碰撞的位姿。
+        # ⚠ 地图生成侧的 _check_path_footprint 是同一份逻辑（参考路径复验用），
+        #   **两处必须同改**，否则复验会放行 env 判碰撞的位姿。
         margin = self.boundary_margin
         ext_x = abs(cos_t) * hl + abs(sin_t) * hw
         ext_y = abs(sin_t) * hl + abs(cos_t) * hw
         return bool(
-            self._x - ext_x < self._world_xmin + margin
-            or self._x + ext_x > self._world_xmax - margin
-            or self._y - ext_y < self._world_ymin + margin
-            or self._y + ext_y > self._world_ymax - margin
+            x - ext_x < self._world_xmin + margin
+            or x + ext_x > self._world_xmax - margin
+            or y - ext_y < self._world_ymin + margin
+            or y + ext_y > self._world_ymax - margin
         )
+
+    # ── CCD：扫掠段采样（默认关；开启后只可能多检出）────────────────────
+
+    SWEEP_STEP_M: float = 0.02  # 扫掠采样间距（米），约为车长 0.38 的 1/19
+    SWEEP_STEP_RAD: float = 0.05  # 扫掠采样角间距（弧度）≈ 2.9°
+    SWEEP_MAX_SAMPLES: int = 64  # 单段采样上限（把 dt/v 异常时的单步开销钉住）
+
+    def _sweep_collision(
+        self, start: tuple[float, float, float], end: tuple[float, float, float]
+    ) -> bool:
+        """扫掠段 [start, end] 的**内部**采样上是否碰撞（连续碰撞检测）。
+
+        只采样内部点：两个端点由 step() 的终点判定覆盖，所以这里的结论是加在旧行为
+        上的安全网，而不是替换它——开启 CCD 的检出集合因此是旧行为的**超集**（只允许
+        多检出，不许放过原先能检出的碰撞，这是本特性的硬约束）。
+
+        段数由平移距离与转角中更"费"的那个决定，并封顶 SWEEP_MAX_SAMPLES：极端速度下
+        退化成稀疏采样，仍是超集（端点必覆盖），只是可能漏掉更细的穿越；上限的意义是
+        让最坏情况的单步开销有界。θ 的增量取**最小角差**（两端都已归一到 [-π, π]，
+        直接相减会在 ±π 回绕处伪造出 ±2π 的假扫掠），插值后再归一，与 step() 的归一
+        顺序一致。位姿在两端之间线性插值——偏航时真实轨迹是圆弧，线性弦只是额外的
+        保守采样（最多多检出）。
+        """
+        dx = end[0] - start[0]
+        dy = end[1] - start[1]
+        dtheta = (end[2] - start[2] + np.pi) % (2 * np.pi) - np.pi
+        n = int(
+            max(
+                abs(dx) / self.SWEEP_STEP_M,
+                abs(dy) / self.SWEEP_STEP_M,
+                abs(dtheta) / self.SWEEP_STEP_RAD,
+            )
+        )
+        n = min(n, self.SWEEP_MAX_SAMPLES)
+        for k in range(1, n + 1):
+            u = k / (n + 1)
+            pose = (
+                start[0] + dx * u,
+                start[1] + dy * u,
+                (start[2] + dtheta * u + np.pi) % (2 * np.pi) - np.pi,
+            )
+            if self._check_collision(pose):
+                return True
+        return False

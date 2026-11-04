@@ -120,7 +120,8 @@ class TestOverrideValidation:
             cs.make("ackermann", turbo=1)
         message = str(excinfo.value)
         assert "turbo" in message
-        assert "可用键共 57 个" in message
+        # 2026-11-05：EnvConfig 新增 integration_substeps / ccd 两个字段 ⇒ 59→61
+        assert "可用键共 61 个" in message
 
     def test_device_is_unknown_key(self):
         """2.0.0：env 的 device 形参已删，make() 不能再把它当合法键收下。"""
@@ -129,6 +130,26 @@ class TestOverrideValidation:
         message = str(excinfo.value)
         assert "device" in message
         assert "可用键" in message
+
+    def test_render_mode_is_a_legal_key(self):
+        """3.0.0 W1：render_mode 是 env 构造参数，api 层只透传（默认/校验都在 env）。"""
+        env = cs.make("ackermann", render_mode="rgb_array")
+        try:
+            assert env.render_mode == "rgb_array"
+            assert "rgb_array" in env.metadata["render_modes"]
+            assert env.metadata["render_fps"] == 10
+            # gymnasium 的 OrderEnforcing（gym.make 包装层）要求先 reset 再 render
+            env.reset(seed=0)
+            frame = env.render()
+            assert isinstance(frame, np.ndarray)
+            assert frame.dtype == np.uint8
+            assert frame.ndim == 3 and frame.shape[2] == 3
+        finally:
+            env.close()
+
+    def test_bogus_render_mode_raises_value_error(self):
+        with pytest.raises(ValueError, match="render_mode.*rgb_array"):
+            cs.make("ackermann", render_mode="bogus")
 
     def test_alias_conflict_raises(self):
         spec = ObsSpec.default()

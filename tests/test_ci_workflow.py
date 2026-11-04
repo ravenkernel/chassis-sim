@@ -82,3 +82,84 @@ def test_ubuntu_matrix_still_covers_every_declared_python(workflow):
     versions = matrix["python-version"]
     assert isinstance(versions, list)
     assert {"3.10", "3.11", "3.12", "3.13"} <= set(versions)
+
+
+def _pip_commands(step: dict) -> list[str]:
+    """一步 run 里的 pip install 命令行（去掉缩进，忽略注释）。"""
+    return [
+        line.strip()
+        for line in (step.get("run") or "").splitlines()
+        if line.strip().startswith("pip install")
+    ]
+
+
+def test_test_job_runs_both_numpy_arms(workflow):
+    """pyproject 只声明 numpy>=1.24（没有上界）：1.x 与 2.x 两档都得真跑。"""
+    matrix = _jobs(workflow)["test"]["strategy"]["matrix"]
+    assert matrix["numpy"] == ["numpy<2", "numpy>=2"]
+
+
+def test_numpy_arm_is_pinned_in_the_same_pip_resolution(workflow):
+    """档位必须和 extras 在同一条 pip install 里解析。
+
+    分两步装的话，第二条命令只按自己的约束挑版本，会把 numba 声明的 numpy
+    上界（例如 0.60 的 numpy<2.1）踩掉 —— 装出来的组合根本不可运行。
+    """
+    steps = _jobs(workflow)["test"]["steps"]
+    install = [step for step in steps if step.get("name") == "Install"]
+    assert install, "test job 缺少 Install 步骤"
+    commands = _pip_commands(install[0])
+    assert len(commands) == 1, commands
+    assert "matrix.numpy" in commands[0], commands[0]
+    assert ".[dev,viz,planning]" in commands[0], commands[0]
+
+
+def test_numpy_major_version_is_verified_after_install(workflow):
+    """装成功不等于装到了档位：矩阵值写松了（numpy<3）也要让 job 红。"""
+    steps = _jobs(workflow)["test"]["steps"]
+    verify = [
+        step
+        for step in steps
+        if (step.get("env") or {}).get("NUMPY_ARM") == "${{ matrix.numpy }}"
+    ]
+    assert verify, "test job 缺少 env: NUMPY_ARM 把档位传给断言步骤"
+    run = verify[0]["run"]
+    assert "numpy.__version__" in run, run
+    assert "sys.exit" in run, run
+    # 档位不符必须非零退出：只 print 一行不算断言。
+    assert "与档位" in run, run
+
+
+def test_only_the_cell_without_a_wheel_is_excluded(workflow):
+    """3.13 × numpy<2 是唯一装不出来的格：cp313 的 numpy 从 2.1.0 才开始。"""
+    matrix = _jobs(workflow)["test"]["strategy"]["matrix"]
+    assert matrix["exclude"] == [{"python-version": "3.13", "numpy": "numpy<2"}]
+    text = WORKFLOW.read_text(encoding="utf-8")
+    assert "cp313" in text, "排除理由必须写在 ci.yml 注释里（cp313 没有 numpy<2 轮子）"
+    assert "numba 0.61.0" in text or "numba 0.61" in text, "3.13 保留的理由也要写清"
+
+
+def test_readme_python_blocks_have_a_docs_job(workflow):
+    """README 的 python 块必须由 CI 真跑，否则文档腐烂没人知道。"""
+    jobs = _jobs(workflow)
+    assert "docs" in jobs, "缺少跑 README 代码块的 docs job"
+    runs = [step for step in jobs["docs"]["steps"] if "run" in step]
+    assert any("tools/check_readme_blocks.py" in step["run"] for step in runs)
+    checker = WORKFLOW.parents[2] / "tools" / "check_readme_blocks.py"
+    assert checker.is_file(), f"docs job 调用的脚本不存在：{checker}"
+
+
+def test_gate_tools_are_not_installed_behind_the_dev_extra(workflow):
+    """mypy / pytest-cov / types-PyYAML 只由 dev extra 提供。
+
+    3.0.0 之前 CI 在 `pip install -e .[dev]` 之后再补一条 pip install 装这三样，
+    于是照 README 装 .[dev] 的人得到的不是 CI 那一套 —— 这条断言防它回来。
+    """
+    offenders = []
+    for job_name, job in _jobs(workflow).items():
+        for step in job.get("steps") or []:
+            for command in _pip_commands(step):
+                for tool in ("mypy", "pytest-cov", "types-PyYAML"):
+                    if tool in command:
+                        offenders.append(f"{job_name} / {step.get('name')}: {command}")
+    assert not offenders, offenders

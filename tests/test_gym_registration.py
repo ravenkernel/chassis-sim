@@ -20,12 +20,24 @@ from chassis_sim.gym_registration import ENV_IDS, register_envs
 ENV_ITEMS = sorted(ENV_IDS.items())
 # 默认观测 = 最小集 odom+path+goal+act（act 段宽度随车型动作维）
 GYM_OBS_DIMS = {
-    "ChassisSim-Ackermann-v0": 128,
-    "ChassisSim-DiffDrive-v0": 128,
-    "ChassisSim-Mecanum-v0": 129,
+    "ChassisSim-Ackermann-v1": 128,
+    "ChassisSim-DiffDrive-v1": 128,
+    "ChassisSim-Mecanum-v1": 129,
 }
 N_VEC = 4
 VEC_STEPS = 100
+
+
+def test_v0_ids_are_gone():
+    """3.0.0 起 id 升到 -v1：旧 id 必须 make 不出来（gymnasium 报 DeprecatedEnv）。"""
+    for env_id in (
+        "ChassisSim-Ackermann-v0",
+        "ChassisSim-DiffDrive-v0",
+        "ChassisSim-Mecanum-v0",
+    ):
+        assert env_id not in registry
+        with pytest.raises(Exception):
+            gym.make(env_id)
 
 
 def test_registration_happens_on_import():
@@ -88,7 +100,7 @@ def test_make_env_forwards_obs_spec_kwarg():
         )
     )
     env = gym.make(
-        "ChassisSim-Ackermann-v0",
+        "ChassisSim-Ackermann-v1",
         obs_spec=spec,
         sensors=[Lidar("front", n_rays=180), Lidar("rear", n_rays=180)],
     )
@@ -141,7 +153,7 @@ def test_make_env_passes_check_env_and_steps(env_id, chassis):
 
 
 def test_sync_vector_env_runs_100_steps():
-    probe = gym.make("ChassisSim-Ackermann-v0")
+    probe = gym.make("ChassisSim-Ackermann-v1")
     try:
         obs_dim = int(probe.observation_space.shape[0])
         act_dim = int(probe.action_space.shape[0])
@@ -149,7 +161,7 @@ def test_sync_vector_env_runs_100_steps():
         probe.close()
 
     venv = SyncVectorEnv(
-        [lambda: gym.make("ChassisSim-Ackermann-v0") for _ in range(N_VEC)]
+        [lambda: gym.make("ChassisSim-Ackermann-v1") for _ in range(N_VEC)]
     )
     try:
         obs, _ = venv.reset(seed=0)

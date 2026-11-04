@@ -2,7 +2,7 @@
 
 用法（仓库根目录）：:
 
-    env -u PYTHONPATH /home/zhao/anaconda3/envs/drl2/bin/python examples/eval_matrix.py
+    python examples/eval_matrix.py
 
 产物：stdout 的 Markdown 两块表 + /tmp/chassis_sim_eval_matrix.json。
 

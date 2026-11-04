@@ -1,6 +1,6 @@
 """传感器层演示：IMU / 轮速计 / 参数化 LiDAR + 延迟与丢帧。
 
-运行：/home/zhao/anaconda3/envs/drl2/bin/python examples/sensors_demo.py
+运行（仓库根目录）：python examples/sensors_demo.py
 
 传感器只写进 info、不进 obs（默认观测是 odom+path+goal+act，与开不开传感器无关）：
 本脚本直接读 bridge 的 get_sensor_reading() —— 1.0.0 里它是激光数据的唯一入口

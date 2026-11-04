@@ -236,9 +236,23 @@ def test_reset_step_100_samples(env_factory, name):
             env.reset(seed=step)
 
 
-def test_default_scene_is_straight_line(env_factory):
+def test_default_scene_is_the_builtin_obstacle_map(env_factory):
+    # 3.0.0 起「不给 options」= 接 EnvConfig.default_scenario（dense_static），
+    # 不再是 2.x 的固定直线；直线仍可由显式 options={} 取回（见下一个用例）。
     env = env_factory("ackermann")
     env.reset(seed=0)
+    assert len(env._obstacles) >= 6
+    path = env.bridge.get_path_global()
+    assert path.shape[0] > 2
+    _, _, _, _, info = env.step(np.zeros(2, dtype=np.float32))
+    assert info["map_fallback"] is False
+
+
+def test_empty_options_keep_the_straight_line(env_factory):
+    # options 显式给出（哪怕空 dict）一律以调用方为准 ⇒ 2.x 的直线兜底
+    env = env_factory("ackermann")
+    env.reset(seed=0, options={})
+    assert env._obstacles == []
     path = env.bridge.get_path_global()
     assert path.shape == (161, 3)
     assert np.allclose(path[0, :2], [1.0, 5.0])

@@ -1,7 +1,6 @@
-"""SensorProvider 抽象接口 —— 与主仓 ros_bridge/sensor_provider.py 同构。
+"""SensorProvider 抽象接口 —— 旧桥传感器接口的同构契约。
 
-签名（8 个抽象方法 + 1 个抽象属性）按字节照抄
-`/home/zhao/drl-sim/ros_bridge/sensor_provider.py`，只把英文 docstring 译成中文：
+签名（8 个抽象方法 + 1 个抽象属性）与旧桥逐一对应，只把英文 docstring 译成中文：
 消费方（envs / 控制器 / 回放脚本）按位置或关键字调用这些方法，任何签名漂移都会让
 旧桥与新桥不可互换。
 

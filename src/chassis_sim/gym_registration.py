@@ -5,7 +5,7 @@
 （tests/test_import_purity.py 在干净子进程里守着这条边界）。
 
 注册的 kwargs 只有 chassis，观测口径（obs_spec / sensors）走 gymnasium 的常规
-覆盖通道：`gym.make("ChassisSim-Ackermann-v0", obs_spec=...) ` 里的多余关键字
+覆盖通道：`gym.make("ChassisSim-Ackermann-v1", obs_spec=...) ` 里的多余关键字
 会被**原样传给构造器**，因此对象参数（ObsSpec、传感器 spec 列表）不需要也不该
 塞进注册表（注册表是全局的，对象参数一旦写进去就变成进程级共享状态）。
 默认观测是最小集 128 / 128 / 129 维。
@@ -21,9 +21,9 @@ ENTRY_POINT = "chassis_sim.envs:ChassisSimEnv"
 
 #: gymnasium id -> 传给 ChassisSimEnv 的车型名（与 chassis/registry.py 同名）
 ENV_IDS: dict[str, str] = {
-    "ChassisSim-Ackermann-v0": "ackermann",
-    "ChassisSim-DiffDrive-v0": "diff_drive",
-    "ChassisSim-Mecanum-v0": "mecanum",
+    "ChassisSim-Ackermann-v1": "ackermann",
+    "ChassisSim-DiffDrive-v1": "diff_drive",
+    "ChassisSim-Mecanum-v1": "mecanum",
 }
 
 

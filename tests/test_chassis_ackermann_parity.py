@@ -37,7 +37,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from chassis_sim.chassis import AckermannChassis
+from chassis_sim.chassis import AckermannChassis, Chassis
 
 _DRL_SIM = "/home/zhao/drl-sim"
 _GOLDEN_PATH = Path(__file__).resolve().parent / "data" / "ackermann_golden.json"
@@ -188,6 +188,22 @@ def _bridge_poses(pairs) -> tuple[list, float]:
 # ── 本仓重放 ─────────────────────────────────────────────────────────
 
 
+def _euler_integrate(chassis, x, y, theta, cmd, dt):
+    """改动前的 integrate（2026-11-05 之前）：一阶 Euler，乘加顺序照抄原件。
+
+    golden 的 poses_euler_legacy 就是这条算术产生的；用它重放能把
+    "动作映射 + 执行器滞后 + θ 归一" 与 "积分式" 拆开验证。
+    """
+    v, omega, vy = cmd.v, cmd.omega, cmd.vy
+    cos_t = np.cos(theta)
+    sin_t = np.sin(theta)
+    return (
+        x + (v * cos_t - vy * sin_t) * dt,
+        y + (v * sin_t + vy * cos_t) * dt,
+        theta + omega * dt,
+    )
+
+
 def _replay(actions: np.ndarray, dt: float) -> list:
     ch = _chassis()
     x = y = theta = 0.0
@@ -208,15 +224,25 @@ def _replay(actions: np.ndarray, dt: float) -> list:
 def _generate() -> dict:
     actions = _actions()
     pairs, mapping_source = _mapped_actions(actions)
-    poses, dt = _bridge_poses(pairs)
+    legacy_poses, dt = _bridge_poses(pairs)  # 旧桥（Euler）现场轨迹
     ch = _chassis()
+    poses = _replay(actions, dt)  # 本仓生产实现（2026-11-05 起闭式积分）
     params = {
         k: (str(v) if isinstance(v, bool) else repr(float(v)))
-        for k, v in _PARAMS.items()
+        for k, v in ch._params().items()
     }
     return {
         "meta": {
-            "what": "阿克曼 bit 级对拍 golden：旧 NumpySimBridge 的位姿轨迹",
+            "what": (
+                "阿克曼 bit 级对拍 golden：poses = 本仓 integrate() 的轨迹"
+                "（2026-11-05 起闭式；此前的 Euler 轨迹留在 poses_euler_legacy），"
+                "poses_euler_legacy = 旧 NumpySimBridge 的位姿轨迹"
+            ),
+            "integration": (
+                "2026-11-05 更换积分式：ω≠0 用闭式解，ω=0 逐位保留 Euler。"
+                "两次重放只有 xy 通道不同（θ 通道逐位相同）；random_240 上 "
+                "max|Δx,Δy| ≈ 4.03e-02、max|Δθ| = 0.0"
+            ),
             "source_bridge": os.path.join(_DRL_SIM, "ros_bridge", "numpy_bridge.py"),
             "source_env_yaml": os.path.join(_DRL_SIM, "config", "env.yaml"),
             "mapping_source": mapping_source,
@@ -235,6 +261,7 @@ def _generate() -> dict:
         "actions": [[repr(float(v)) for v in a] for a in actions],
         "mapped_delta_v": [[repr(delta), repr(v)] for delta, v in pairs],
         "poses": [[repr(float(c)) for c in p] for p in poses],
+        "poses_euler_legacy": [[repr(float(c)) for c in p] for p in legacy_poses],
     }
 
 
@@ -319,10 +346,14 @@ _skip_no_drl = pytest.mark.skipif(
 
 @_skip_no_drl
 def test_recorded_golden_is_live_old_bridge_output():
-    """现场重放旧桥，证明 JSON 里的位姿就是旧实现的真实输出。"""
+    """现场重放旧桥，证明 poses_euler_legacy 就是旧实现的真实输出。
+
+    2026-11-05 起 golden 的 poses 是本仓闭式积分的轨迹，旧桥（Euler）那条
+    留在 poses_euler_legacy —— 这才是"与旧桥逐位对拍"的那一列。
+    """
     data = _load()
     actions = _floats(data["actions"])
-    expected = _floats(data["poses"])
+    expected = _floats(data["poses_euler_legacy"])
 
     pairs, _ = _mapped_actions(actions)
     recorded_pairs = _floats(data["mapped_delta_v"])
@@ -340,6 +371,48 @@ def test_recorded_golden_is_live_old_bridge_output():
         + format(err, ".3e")
     )
     assert err_xy <= TOL and err <= TOL
+
+
+def test_legacy_euler_replay_reproduces_old_bridge_trajectory(monkeypatch):
+    """把 integrate 钉回旧 Euler，重放必须逐位复现旧桥轨迹。
+
+    这条把"动作映射 + 执行器滞后 + θ 归一"从"积分式"里分离出来：
+    poses（新）与 poses_euler_legacy（旧）之间的差只可能来自积分式。
+    """
+    data = _load()
+    if "poses_euler_legacy" not in data:
+        pytest.skip("旧版 golden 无 poses_euler_legacy（重录即可）")
+    actions = _floats(data["actions"])
+    expected = _floats(data["poses_euler_legacy"])
+    dt = float(data["meta"]["bridge_dt"])
+
+    monkeypatch.setattr(Chassis, "integrate", _euler_integrate)
+    got = np.array(_replay(actions, dt), dtype=np.float64)
+    assert got.shape == expected.shape
+    err_xy = float(np.abs(got[:, :2] - expected[:, :2]).max())
+    err_theta = float(np.abs(_ang_diff(got[:, 2], expected[:, 2])).max())
+    print(
+        "\n[legacy] max|Δx,Δy|="
+        + format(err_xy, ".3e")
+        + " max|Δθ|="
+        + format(err_theta, ".3e")
+    )
+    assert err_xy <= TOL, "旧 Euler 重放偏离旧桥 " + format(err_xy, ".3e")
+    assert err_theta <= TOL
+
+
+def test_new_poses_differ_from_legacy_only_in_xy():
+    """两条轨迹的差：xy 有 4e-2 量级，θ 逐位相同（积分式只改位置更新）。"""
+    data = _load()
+    if "poses_euler_legacy" not in data:
+        pytest.skip("旧版 golden 无 poses_euler_legacy（重录即可）")
+    new = _floats(data["poses"])
+    old = _floats(data["poses_euler_legacy"])
+    d_xy = float(np.abs(new[:, :2] - old[:, :2]).max())
+    d_th = float(np.abs(_ang_diff(new[:, 2], old[:, 2])).max())
+    print("\n[new-vs-legacy] max|Δx,Δy|=" + format(d_xy, ".3e"))
+    assert d_th == 0.0, "θ 通道不该被闭式积分改动"
+    assert 3.0e-2 <= d_xy <= 5.0e-2, "xy 偏差 " + format(d_xy, ".3e") + " 超出记录区间"
 
 
 @_skip_no_drl

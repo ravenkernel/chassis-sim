@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from .ackermann import AckermannChassis
-from .base import Chassis, ChassisCommand
+from .base import Chassis, ChassisCommand, WheelKinematics
 from .diff_drive import DiffDriveChassis
 from .mecanum import MecanumChassis
 from .registry import CHASSIS_REGISTRY, available_chassis, make_chassis
@@ -15,6 +15,7 @@ __all__ = [
     "ChassisCommand",
     "DiffDriveChassis",
     "MecanumChassis",
+    "WheelKinematics",
     "available_chassis",
     "make_chassis",
 ]

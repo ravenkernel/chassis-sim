@@ -57,6 +57,19 @@ __all__ = [
     "evaluate",
     "to_markdown",
     "wilson_interval",
+    # 基准协议层（benchmark.py）：策略 × 场景 × seed + 独立样本闸门
+    "BASELINES",
+    "MIN_SEEDS",
+    "POLICY_KINDS",
+    "BenchmarkCell",
+    "BenchmarkResult",
+    "BenchmarkSummary",
+    "PolicySpec",
+    "RandomPolicy",
+    "ZeroPolicy",
+    "benchmark",
+    "benchmark_cell",
+    "make_policy",
 ]
 
 #: 95% 双侧正态分位数
@@ -399,7 +412,7 @@ def controller_observation(env: Any) -> dict[str, Any]:
     Controller.act() 的契约键（见 controllers/base.py）：
         pose       (3,) 世界系 [x, y, theta] —— 扁平 obs 里没有世界位姿，
                    唯一权威来源是 bridge.get_odometry()[0:3]；
-        obstacles  可选，主仓同构的障碍列表（env._obstacles）；
+        obstacles  可选，与控制器契约同构的障碍列表（env._obstacles）；
         dt         可选，DWA 用。
 
     这里**不**使用 env.reset()/step() 返回的扁平 obs：那是给策略网络用的
@@ -833,3 +846,22 @@ def to_markdown(
             "无法自证 n 个回合是否各跑一张不同的图 ⇒ 区间同样不该按独立样本引用。"
         )
     return "\n".join(lines)
+
+
+# 基准协议层放在最后一个 import：benchmark.py 反过来从本模块取 EvalResult /
+# evaluate / wilson_interval，此刻它们都已定义好（E402 在 pyproject 里已放开，
+# 本仓的「底部延迟导入」就是既有写法）。
+from chassis_sim.eval.benchmark import (  # noqa: E402
+    BASELINES,
+    MIN_SEEDS,
+    POLICY_KINDS,
+    BenchmarkCell,
+    BenchmarkResult,
+    BenchmarkSummary,
+    PolicySpec,
+    RandomPolicy,
+    ZeroPolicy,
+    benchmark,
+    benchmark_cell,
+    make_policy,
+)

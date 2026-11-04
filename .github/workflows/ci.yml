@@ -7,6 +7,15 @@ on:
 
 jobs:
   # 全量：render（matplotlib）与规划（numba）都真跑，缺依赖不允许悄悄变 skip。
+  #
+  # NumPy 两档：pyproject 只声明 numpy>=1.24（没有上界），而 numba 从 0.60.0
+  # 起才提供 NumPy 2 的二进制支持 ⇒ 用户装到的 numpy 可能是 1.x 也可能是 2.x。
+  # 两档都真跑一遍，"numpy>=1.24" 才不是一句只写在元数据里的声明。
+  #
+  # 3.13 × numpy<2 显式排除：cp313 的 NumPy 轮子从 2.1.0 才开始，numpy<2
+  # 在 3.13 上根本装不出来（实测 pip download --python-version 3.13 "numpy<2"
+  # → No matching distribution found），留着这一格只会是解析失败而不是测试结论。
+  # 3.13 本身不排除：numba 0.61.0 起有 cp313 轮子，numpy>=2 档可以真跑。
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -14,6 +23,10 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13"]
+        numpy: ["numpy<2", "numpy>=2"]
+        exclude:
+          - python-version: "3.13"
+            numpy: "numpy<2"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -22,7 +35,23 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev,viz,planning]"
+          # 档位与 extras 必须在同一条命令里解析：分两步装的话，第二次
+          # install 只按自己的约束挑版本，会把 numba 声明的 numpy 上界
+          # （例如 0.60 的 numpy<2.1）踩掉，装出的环境不再是可运行组合。
+          pip install -e ".[dev,viz,planning]" "${{ matrix.numpy }}"
+      - name: Verify numpy major version
+        env:
+          NUMPY_ARM: ${{ matrix.numpy }}
+        # 装成功不等于装到了想要的档位：pip 只会给约束以内的最新版，
+        # 矩阵值写松了（把 "numpy<2" 写成 "numpy<3"）上面一步照样绿。
+        run: |
+          python -c 'import os, sys
+          import numpy
+          arm = os.environ["NUMPY_ARM"]
+          want = "1" if arm == "numpy<2" else "2"
+          got = numpy.__version__.split(".")[0]
+          print(f"numpy {numpy.__version__} (arm {arm})")
+          sys.exit(0 if got == want else f"numpy {numpy.__version__} 与档位 {arm} 不符")'
       - name: Test
         run: pytest -q
 
@@ -113,10 +142,11 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install mypy and typed runtime deps
+        # mypy / types-PyYAML 由 dev extra 钉死（pyproject.toml），不再单独
+        # pip install —— 否则本地 .[dev] 与 CI 装的不是同一套版本。
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
-          pip install "mypy==2.4.1" "types-PyYAML==6.0.12.20261103"
       - name: mypy
         env:
           MYPYPATH: src
@@ -136,9 +166,30 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install
+        # pytest-cov 由 dev extra 钉死（pyproject.toml），不再单独安装。
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev,viz,planning]"
-          pip install "pytest-cov==7.1.0"
       - name: Test with coverage gate
         run: pytest -q --cov --cov-report=term:skip-covered --cov-fail-under=82
+
+  # README 的 python 代码块是文档里唯一能被机器验证的部分：脚本把两份 README
+  # 里的每个 python 围栏块在独立子进程里真跑一遍（不是语法检查），块首行写
+  # `# no-exec` 才跳过，语义见 CONTRIBUTING.md —— 跳过要写理由，跑不过不许
+  # 写成跳过。块里会 import numba / matplotlib，所以这里装全量 extras。
+  # README 正在被重写：新 README 不需要改这个 job，也不需要改脚本，
+  # 块数变化与失败项会直接出现在这一步的日志里。
+  docs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,viz,planning]"
+      - name: Run README python blocks
+        run: python tools/check_readme_blocks.py

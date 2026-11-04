@@ -1,6 +1,6 @@
 """场景集 demo：用 chassis_sim.scenarios + cs.make 驱动三个 core 场景。
 
-运行：env -u PYTHONPATH /home/zhao/anaconda3/envs/drl2/bin/python examples/scenario_demo.py
+运行（仓库根目录）：python examples/scenario_demo.py
 
 对 straight / corridor / dense_static 三个 core 场景（不需要 numba）各建一个 env、
 各跑 50 步随机动作；回合被碰撞/超时终止时立刻 reset 并继续，保证每个场景都跑满

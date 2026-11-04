@@ -6,10 +6,9 @@
 
 车型正映射的来源（**逆映射必须据此反解，不许凭空假设**）：
 
-* 阿克曼：/home/zhao/drl-sim/envs/ackermann_env.py:820-833 的
-  `_step_impl` 逐字映射 —— 曲率模式 `δ = arctan(clip(a0*κ_max, ±κ_max) * L)`、
+* 阿克曼：曲率模式 `δ = arctan(clip(a0*κ_max, ±κ_max) * L)`、
   线性模式 `δ = a0*δ_max`；速度 `a1 ≥ 0 → v = a1*v_max`、`a1 < 0 → v = a1*(-v_min)`；
-  再由 `ω = v/L·tan(δ)`（ros_bridge/numpy_bridge.py:383 同式）得到横摆角速度。
+  再由 `ω = v/L·tan(δ)` 得到横摆角速度。
 * 差速 / 麦轮：归一化线性映射 `a = [v/v_max, (vy/vy_max,) ω/ω_max]`，负速度用
   `-v_min` 分段（与 `Chassis.command()` 同口径）。
 
@@ -163,7 +162,7 @@ class Controller(ABC):
 
         观测契约（ duck-typed，只读不写）：
             observation["pose"]        (3,) [x, y, θ] 世界系位姿（必需）
-            observation["obstacles"]   可选，主仓同构的障碍列表
+            observation["obstacles"]   可选，env 侧同构的障碍列表
             observation["dt"]          可选，DWA 覆盖控制周期
         """
 

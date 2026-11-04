@@ -10,6 +10,7 @@ chassis_sim.config.schema._resolve() 解析 —— 与 ChassisSimEnv.__init__ �
 
     env = cs.make("ackermann")                    # 默认 128 维观测
     env = cs.make("mecanum", v_max=1.2, seed=3)   # kwargs 覆盖
+    env = cs.make("ackermann", render_mode="rgb_array")  # 渲染模式透传给 env
     cfg = cs.EnvConfig(v_max=0.8)
     env = cs.make(cfg)                            # 用配置构造
     env = cs.make(cfg, v_max=0.4)                 # kwargs 再覆盖
@@ -78,6 +79,9 @@ _EXTRA_ENV_ARGS = (
     "reward_kwargs_extra",
     "strict_reward_kwargs",
     "reward_cfg",
+    # 3.0.0 W1：默认值与合法性校验都在 ChassisSimEnv.__init__ 里，api 层只透传，
+    # 免得两处校验漂移（见下面 _EXTRA_ENV_ARGS 的取值循环：None = 没给 ⇒ 不转发）。
+    "render_mode",
 )
 # 别名 -> 正名：obs= 是 obs_spec= 的别名。seed 自 1.1.0 起是 EnvConfig 的**正名**
 # 字段（运行种子），不再转投 sensor_seed，故这里是自映射（_check_alias 永不触发）
@@ -138,8 +142,8 @@ def make(
             等价于 sensors= 覆盖；只在 env 自造桥时生效。
         obs: obs_spec 的别名（ObsSpec 实例）。
         **overrides: EnvConfig 字段名（v_max / dt / domain_rand_enabled ...）或
-            env 专属构造参数（map_generator / reward_cfg / safety_gate ...）。
-            未知键直接 ValueError。
+            env 专属构造参数（map_generator / reward_cfg / safety_gate /
+            render_mode ...）。未知键直接 ValueError。
 
     Returns:
         构造好的 ChassisSimEnv；若给了 scenario，还带 scenario 属性与

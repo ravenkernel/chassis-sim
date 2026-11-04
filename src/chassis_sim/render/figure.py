@@ -1049,6 +1049,22 @@ def render_frame(
     )
 
 
+def render_to_array(
+    bridge: Bridge, *, dpi: float = _DEFAULT_DPI, **kwargs: Any
+) -> np.ndarray:
+    """渲染桥的当前状态，返回 uint8 (H, W, 3) 的 RGB 像素数组。
+
+    与 render_to_png 同一套画法（同一 Figure、同一 dpi），只是不落盘：直接把
+    Agg 画布抓成内存缓冲。颜色顺序是 RGB（丢弃 alpha），dtype 固定 uint8。
+    """
+    mpl = _import_matplotlib()
+    fig = render_frame(bridge, dpi=dpi, **kwargs)
+    canvas = mpl.FigureCanvasAgg(fig)
+    canvas.draw()
+    rgba = np.asarray(canvas.buffer_rgba())
+    return np.ascontiguousarray(rgba[..., :3])
+
+
 def save_figure(fig: Any, path: str | Path, *, dpi: float | None = None) -> Path:
     """把 Figure 写成确定性 PNG（去掉 `Software` 元数据，无时间戳）。"""
     target = Path(path)

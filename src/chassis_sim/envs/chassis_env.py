@@ -1,22 +1,22 @@
-"""车型参数化的环境核心（W4b：由 drl-sim/envs/ackermann_env.py 移植）。
+"""车型参数化的环境核心（W4b）。
 
-与主仓 AckermannEnv 的**有意差异**（代码里也逐处注明）：
-1. 默认桥是 chassis_sim.bridges.SimpleBridge（主仓要求外部注入 NumpySimBridge）；
+与原实现的**有意差异**（代码里也逐处注明）：
+1. 默认桥是 chassis_sim.bridges.SimpleBridge（原实现要求外部注入 NumpySimBridge）；
    bridge=None 时按 cfg 自动构造。
 2. 动作 → 物理量的映射由 Chassis.command() 负责，不再在 env 里写 δ/v 的
-   if/else；阿克曼分支与主仓 ackermann_env.py:820-833 逐字等价。
-3. 不 import training.*（主仓 __init__ 里 from training.config import ...），
+   if/else；阿克曼分支的公式与原实现逐位等价。
+3. 不 import 宿主的训练配置（原实现从 training.config 取 EnvConfig），
    配置改用 chassis_sim.config.EnvConfig / RewardConfig（1.0.0 W1 起唯一家是
     config/schema.py）。
-4. dt 形参真正生效（主仓的 dt 形参是死键，实际读 _ec.dt）。
+4. dt 形参真正生效（原实现的 dt 形参是死键，实际读 _ec.dt）。
 5. MapGenerationError 按类名鸭子类型判定，不 import chassis_sim.planning
    （core 安装没有 numba）。
-6. map_generator=None 时显式给内建直线场景（主仓传 None 让桥隐式兜底），
+6. map_generator=None 时显式给内建直线场景（原实现传 None 让桥隐式兜底），
    两者几何完全一致（(1,5) → (9,5)，0.05 m 间隔）。
 7. safety_gate 仅阿克曼可用（它夹的物理量是 (δ, v)）。
 8. action 形状校验；mapped_action 宽度 = action_dim；观测 act 段宽度 =
    action_dim（差速 2 / 麦轮 3，见 _act_vector）。
-9. 物理动作由 Chassis.command() 在 float64 里算出再交给桥；主仓把
+9. 物理动作由 Chassis.command() 在 float64 里算出再交给桥；原实现把
     mapped_action 存成 float32 并用它积分。同一串动作下两侧状态会从 float32
     舍入位开始漂移，实测 100 步后观测 max|Δ| = 9.5e-07（float32 eps 的 8 倍），
     奖励 max|Δ| = 2.5e-08；无噪声的直线场景逐步 max|Δ| = 0。要位级一致，
@@ -45,6 +45,7 @@ from chassis_sim.config import EnvConfig, RewardConfig
 from chassis_sim.config.schema import _resolve, resolve_sensor_seed
 from chassis_sim.obs import ObsSpec
 from chassis_sim.obs.context import ContextBuilder
+from chassis_sim.obs.spec import BoundContext
 from chassis_sim.paths import gear_is_compliant, segment_is_reverse
 from chassis_sim.reward import RewardCalculator
 from chassis_sim.sensors import Imu, Lidar, WheelOdom
@@ -71,8 +72,19 @@ _DEFAULT_CHASSIS_PARAMS: dict[str, tuple[str, ...]] = {
     "mecanum": ("v_max",),
 }
 
-# 默认世界边界（与主仓 config/env.yaml 的 world 段、SimpleBridge 默认值一致）
+# 默认世界边界（与 config/env.yaml 的 world 段、SimpleBridge 默认值一致）
 _DEFAULT_WORLD_BOUNDS = (0.0, 10.0, 0.0, 10.0)
+
+#: 默认场景重掷：位置/朝向抖动幅度（米/弧度）、丢障碍概率与保底个数。
+_OBSTACLE_JITTER_XY = 0.10
+_OBSTACLE_JITTER_THETA = 0.10
+_OBSTACLE_DROP_PROB = 0.15
+_OBSTACLE_MIN_KEEP = 6
+
+#: matplotlib 的非交互后端：human 渲染在这些后端上只画不刷屏。
+_NON_INTERACTIVE_BACKENDS = frozenset(
+    {"agg", "pdf", "ps", "svg", "template", "cairo", "pgf"}
+)
 
 
 def _resolve_chassis(chassis, cfg: EnvConfig) -> Chassis:
@@ -101,7 +113,7 @@ def _straight_scene() -> tuple[list, np.ndarray, float, float]:
     """内建直线兜底场景：start (1,5) → goal (9,5)，0.05 m 间隔，航向 0。
 
     路径是 **(N, 3) [x, y, 鼻向]**：env 的 CTE / 档位判定读 ``path_body[:, 2]``，
-    主仓 NumpySimBridge 的隐式兜底同样带 θ 列（numpy_bridge.py:361-366 用
+    桥侧的隐式兜底同样带 θ 列（用
     ``column_stack([path_x, path_y, theta])``），列数必须对齐。
     """
     n_pts = max(2, int(np.ceil(8.0 / 0.05)) + 1)
@@ -224,7 +236,7 @@ class ChassisSimEnv(gym.Env):
 
     <<chassis>> 是车型名（"ackermann" / "diff_drive" / "mecanum"）或 Chassis
     实例。动作空间、物理映射、观测 act 段宽度都由底盘派生；其余语义（观测
-    组装顺序、奖励、终止判定、info 键）与主仓 AckermannEnv 一致。
+    组装顺序、奖励、终止判定、info 键）与原实现一致。
 
     Action: Box(action_dim, [-1,1], float32)，各轴语义由底盘定义：
       * ackermann: [转向标度, 速度标度]
@@ -252,7 +264,12 @@ class ChassisSimEnv(gym.Env):
     会互相打乱随机流。sensors= 与 bridge= 互斥，注入桥上也没有任何种子可传。
     """
 
-    metadata: ClassVar[dict[str, list[str]]] = {"render_modes": ["human"]}
+    # 类级默认（gymnasium 读 ClassVar）；实例 metadata 在 __init__ 里补 render_fps，
+    # render_fps 由 dt 推，不能在类级写死。
+    metadata: ClassVar[dict[str, Any]] = {
+        "render_modes": ["human", "rgb_array"],
+        "render_fps": 10,
+    }
 
     # ── 有界追赶参数（2026-10-06：修 _target_idx 永久冻结）────────────────
     # 详见 `_advance_target_idx` 的 docstring。
@@ -293,6 +310,7 @@ class ChassisSimEnv(gym.Env):
         strict_reward_kwargs: bool = False,
         emit_reward_components: bool | None = None,
         world_bounds: tuple[float, float, float, float] | None = None,
+        render_mode: str | None = None,
     ):
         super().__init__()
         _ec = cfg if cfg is not None else EnvConfig()
@@ -342,7 +360,7 @@ class ChassisSimEnv(gym.Env):
         self._obstacles: list[dict] = []
         # 当前生效的动态障碍规格（空 = 无）；切回静态场景时用于显式清空。
         self._dynamic_obstacles: list[dict] = []
-        # dt 真生效（主仓 __init__ 的 dt 形参是死键，实际读 _ec.dt）：桥与
+        # dt 真生效（原实现的 dt 形参是死键，实际读 _ec.dt）：桥与
         # step 必须共用同一个 dt，所以先于桥构造赋值。
         # 三级优先级保留：dt kwarg > cfg.dt > dataclass 默认（cfg.dt 恒有值）
         self.dt = float(_resolve(dt, _ec.dt))
@@ -411,6 +429,11 @@ class ChassisSimEnv(gym.Env):
             self._dynamics_info["level_source"] = "constructor"
 
         # ── 桥：默认 SimpleBridge；注入的桥必须共用同一台底盘 ──────────
+        # env 是否**自己造了**桥（只有 bridge=None 才会自造 SimpleBridge）。这是
+        # 一次性的构造期事实，必须在这里记下：走到 self.bridge = bridge 之后，
+        # "自造"与"注入"已无从分辨，任何事后重新推断都只能退化成猜。默认场景的
+        # 接管判据消费它（见 _default_scenario_active）。
+        self._bridge_owned = bridge is None
         _bridge_chassis = getattr(bridge, "chassis", None)
         if _bridge_chassis is not None and _bridge_chassis is not self.chassis:
             raise ValueError(
@@ -435,12 +458,27 @@ class ChassisSimEnv(gym.Env):
         self.sensor_seed: int = resolve_sensor_seed(
             _resolve(sensor_seed, _ec.sensor_seed, None), self.seed
         )
+        # ── 内建默认场景（3.0.0 W1）─────────────────────────────────────
+        # 调用方没给场景时不再退化成固定直线：env 按 EnvConfig.default_scenario
+        # 接一张自带障碍的场景，并允许重掷地图（只在 options 为 None **且**桥由
+        # env 自造时生效，见 _default_scenario_active）。default_scenario=None ⇒
+        # 回到 2.x 的直线。
+        self._default_scenario_name = getattr(_ec, "default_scenario", None)
+        self._default_scenario_obj = None
+        self._default_roll_index = 0
+        # world_bounds 无论桥是不是注入的都解析并留存：观测界（goal/path 段）要用
+        # 它推导"车与路径都在这个矩形里"，这是唯一一条几何前提。注入桥时这个值
+        # 只用于推导，绝不回写桥（桥自己的边界由桥负责）。
+        _wbounds = tuple(
+            float(_x)
+            for _x in _resolve(world_bounds, _ec.world_bounds, _DEFAULT_WORLD_BOUNDS)
+        )
+        self._world_bounds = _wbounds
         if bridge is None:
-            _wbounds = _resolve(world_bounds, _ec.world_bounds, _DEFAULT_WORLD_BOUNDS)
             bridge = SimpleBridge(
                 self.chassis,
                 dt=self.dt,
-                world_bounds=tuple(float(_x) for _x in _wbounds),
+                world_bounds=_wbounds,
                 max_range=float(_ec.lidar_max_range),
                 domain_rand=bool(domain_rand),
                 # 只有 env 自造的桥才拿到 seed；注入桥的随机性由桥自己负责（见
@@ -454,6 +492,10 @@ class ChassisSimEnv(gym.Env):
                 goal_end_wp_margin=int(_ec.goal_end_wp_margin),
                 sensors=sensors,
                 sensor_seed=self.sensor_seed,
+                # 积分/碰撞精度旋钮（2026-11-05）：只转发，不在这里解释语义。
+                # 注入桥时**不回写**（桥自己拥有它的积分器与碰撞判据）。
+                integration_substeps=int(_ec.integration_substeps),
+                ccd=bool(_ec.ccd),
             )
         elif sensors is not None:
             # sensors= 与注入 bridge= **互斥**（这里选择抛错而不是"事后转交"）：
@@ -615,10 +657,13 @@ class ChassisSimEnv(gym.Env):
         # cte/path_d_max，clip 到 ±1），从 RewardConfig 转发；getattr 兜底兼容
         # 没有该字段的旧 RewardConfig。0.1.1：它**不是**奖励参数（RewardCalculator
         # 从不消费）⇒ 只从 _rw_kwargs 摘掉，字段 / YAML 键 / 本行一律保留。
+        # lookahead 存一份：ContextBuilder 用它截取窗口，观测界（path 段的 ρ）
+        # 也要用它推导上界，两处必须是同一个数。
+        self._path_lookahead = float(_resolve(path_lookahead, _ec.path_lookahead, 20.0))
         self._ctx_builder = ContextBuilder(
             max_path_points=self._max_path_points,
             path_power=self._path_power,
-            lookahead=float(_resolve(path_lookahead, _ec.path_lookahead, 20.0)),
+            lookahead=self._path_lookahead,
             v_max=self.v_max,
             v_min=self.v_min,
             delta_max=self.delta_max,
@@ -657,12 +702,38 @@ class ChassisSimEnv(gym.Env):
                 f"obs_spec 的 act 段宽 {_act_sl.stop - _act_sl.start} 超过 "
                 f"action_dim={self.action_dim}：底盘给不出这么多动作分量"
             )
+        # Box 的上下界由各段自己推导（obs/spec.py 的 Segment.bounds），env 只负责
+        # 把环境量喂进去。没有推导依据的段（Custom、未声明量程的 lidar 传感器）
+        # 保持 ±inf —— 不猜；那种情况下 check_env 会点名，这是信号不是缺陷。
+        _b_low, _b_high = self._obs_resolved.bounds(self._bound_context())
+        if priv_dim:
+            # privileged 段是 PrivilegedEncoder 的 [0,1] 归一化编码。
+            _b_low = np.concatenate([_b_low, np.zeros(priv_dim, dtype=np.float32)])
+            _b_high = np.concatenate([_b_high, np.ones(priv_dim, dtype=np.float32)])
         self.observation_space = spaces.Box(
-            low=-np.inf,
-            high=np.inf,
+            low=_b_low.astype(np.float32),
+            high=_b_high.astype(np.float32),
             shape=(self._full_obs_dim,),
             dtype=np.float32,
         )
+        # 越界计数：_clip_obs 累加，reset/step 只在非零时写进 info。
+        self._obs_clipped = 0
+
+        # render_mode=None ⇒ 不渲染（不 warning，与 gymnasium 一致）；"human" 走
+        # 既有 render 子包画到可复用 Figure，"rgb_array" 返回 uint8 (H, W, 3)。
+        # fps 由 dt 推，只能写进实例 metadata（类级给默认值）。
+        if render_mode not in (None, "human", "rgb_array"):
+            raise ValueError(
+                f"render_mode 只能是 None / 'human' / 'rgb_array'，得到 {render_mode!r}"
+            )
+        self.render_mode: str | None = render_mode
+        self._render_fig = None
+        self._render_ax = None
+        self.metadata = {
+            **type(self).metadata,
+            "render_modes": ["human", "rgb_array"],
+            "render_fps": max(1, int(round(1.0 / float(self.dt)))),
+        }
 
         self.switch_radius = 0.5
         self._step_count = 0
@@ -792,8 +863,15 @@ class ChassisSimEnv(gym.Env):
         elif self.map_generator is not None:
             # goal_heading 由桥按路径末端自行推导，这里的返回值用不上。
             obstacles, path, _goal_heading, initial_heading = self._generate_scene()
+        elif self._default_scenario_active(options):
+            # 3.0.0：不给 options 时接 env 自带场景（不再退化成固定直线）。
+            # 它返回的是完整 reset options，于是下面的动态障碍分支照常生效。
+            _opts = self._default_scene(seed)
+            obstacles = _opts.get("obstacles")
+            path = _opts.get("path_waypoints")
+            initial_heading = _opts.get("initial_heading")
         else:
-            # 与主仓的**有意差异**：主仓这里传 (None, None, 0.0, None)，让桥用
+            # **有意差异**：原实现这里传 (None, None, 0.0, None)，让桥用
             # 20 点 10m 的隐式直线兜底；这里显式给出同一条直线（1,5 → 9,5，
             # 0.05 m 间隔），使场景在 reset 后可观测，几何完全一致。
             obstacles, path, _goal_heading, initial_heading = _straight_scene()
@@ -857,10 +935,11 @@ class ChassisSimEnv(gym.Env):
         )
         if self._priv_enabled and self._priv_encoder is not None:
             obs_np = self._append_privileged(obs_np, raw["odometry"])
+        obs_np = self._clip_obs(obs_np)
         # 传感器读数与 step 共用 _sensor_info()（唯一口径）：桥在 reset 末尾已产出
         # 真实首帧（S3b，见 SimpleBridge.reset），所以这里拿到的是本回合 t=0 的读数，
         # 不是空字典；未启用传感器时仍是 {}（不新增任何键）。
-        return obs_np, self._sensor_info()
+        return obs_np, self._reset_info()
 
     # ── 车型适配层（W4b）──────────────────────────────────────────────
     def _v_norm(self, v: float) -> float:
@@ -946,8 +1025,8 @@ class ChassisSimEnv(gym.Env):
     ) -> tuple[np.ndarray, bool, float, float]:
         """加速度/转角速率限幅 + 可选 SafetyGate ⇒ 重新编码成动作。
 
-        非默认路径（三个开关默认全关，此时 step 完全等价于主仓的直通）。
-        限幅在物理域做（与主仓一致），因此出口要再编码一次。
+        非默认路径（三个开关默认全关，此时 step 完全等价于直通）。
+        限幅在物理域做（与原实现一致），因此出口要再编码一次。
 
         返回 (act, safety_brake, v, omega)：后两项是**限幅/gate 之后**的物理量，
         供 dynamics 档（wheel）在同一物理域里接一阶滞后——调用方不必再从 act
@@ -1146,7 +1225,7 @@ class ChassisSimEnv(gym.Env):
         """跑 map_generator，只吞 MapGenerationError（按类名判定，不 import planning）。
 
         连续 MAP_GEN_RETRIES 次失败 ⇒ _map_fallback=True + RuntimeWarning +
-        回退内建直线场景（与主仓 ackermann_env.py:506-560 行为一致）。
+        回退内建直线场景（与原实现的对应分支行为一致）。
         """
         last_exc = None
         for _ in range(self.MAP_GEN_RETRIES):
@@ -1410,7 +1489,7 @@ class ChassisSimEnv(gym.Env):
 
         # 动作通路（W4b）：mapped_action 的物理映射交给底盘，env 只做
         # 保 dtype 的拷贝 + 形状校验 + 可选限幅/闸门。
-        # 「保 dtype」很关键：主仓 mapped_action = action.copy() 后逐元素覆盖，
+        # 「保 dtype」很关键：原实现 mapped_action = action.copy() 后逐元素覆盖，
         # dtype 跟输入走；对拍要位级一致就不能在这里强制 float32。
         act = np.array(action, copy=True)
         if act.shape != (self.action_dim,):
@@ -1730,6 +1809,7 @@ class ChassisSimEnv(gym.Env):
         )
         if self._priv_enabled and self._priv_encoder is not None:
             obs_np = self._append_privileged(obs_np, raw["odometry"])
+        obs_np = self._clip_obs(obs_np)
 
         reward, reward_comps = self.reward_calc.compute(
             done=False,
@@ -1889,6 +1969,9 @@ class ChassisSimEnv(gym.Env):
         # ── 可选传感器读数（默认全关 ⇒ 不新增任何键，信息路径零变化）──────
         # 与 reset() 共用 _sensor_info()：两处只有一套键名/结构口径。
         info.update(self._sensor_info())
+        # 越界计数只在真的越界时出现（info 的键集合在合法回合里逐位不变）。
+        if self._obs_clipped:
+            info["obs_clipped"] = int(self._obs_clipped)
 
         return obs_np, reward, terminated, truncated, info
 
@@ -1997,5 +2080,166 @@ class ChassisSimEnv(gym.Env):
             if hasattr(self.map_generator, "_stage_index"):
                 self.map_generator._stage_index = int(stage_index)
 
+    # ── 观测界 / 越界计数（3.0.0 W1）──────────────────────────────────
+    def _bound_context(self) -> BoundContext:
+        """把环境量摊成观测界的推导输入（构造期算一次）。"""
+        xmin, xmax, ymin, ymax = (float(_v) for _v in self._world_bounds)
+        lidar = {
+            str(_spec.name): (float(_spec.range_min), float(_spec.max_range))
+            for _spec in self._lidar_specs()
+        }
+        return BoundContext(
+            dt=float(self.dt),
+            v_max=float(self.v_max),
+            v_min=float(self.v_min),
+            vy_max=float(self.vy_max),
+            omega_max=float(self.omega_max),
+            lookahead=float(self._path_lookahead),
+            world_diag=float(np.hypot(xmax - xmin, ymax - ymin)),
+            lidar=lidar,
+        )
+
+    def _clip_obs(self, obs: np.ndarray) -> np.ndarray:
+        """把越界观测夹回 observation_space，并累加越界计数。
+
+        只在真的越界时才夹：合法观测**原样返回同一个数组**（零拷贝，训练热路径
+        不变）。NaN 既不计也不夹 —— 它是上游缺陷的信号，夹掉只会让缺陷更难查。
+        计数累加在 self._obs_clipped，由 reset/step 在非零时写进 info。
+        """
+        low = self.observation_space.low
+        high = self.observation_space.high
+        with np.errstate(invalid="ignore"):
+            out_of = (obs < low) | (obs > high)
+        n = int(np.count_nonzero(out_of))
+        if n == 0:
+            return obs
+        self._obs_clipped += n
+        return np.clip(obs, low, high).astype(obs.dtype, copy=False)
+
+    def _reset_info(self) -> dict[str, Any]:
+        """reset 的 info：传感器读数 +（仅非零时）越界计数。"""
+        info = dict(self._sensor_info())
+        if self._obs_clipped:
+            info["obs_clipped"] = int(self._obs_clipped)
+        return info
+
+    # ── 内建默认场景（3.0.0 W1）───────────────────────────────────────
+    def _default_scenario_active(self, options: Mapping[str, Any] | None) -> bool:
+        """本回合是否走 env 自带的默认场景。
+
+        三条前提**全部**成立才接管；任一不成立都说明"世界由调用方负责"，env 不得
+        把内置场景塞进去：
+
+        1. options is None —— 调用方给了 options（含空 dict）就是显式声明场景由
+           它定，保持 2.x 的直线兜底语义（W4b 的选项优先级不变）。
+        2. self._bridge_owned —— 桥是 env 自己造的。注入的桥带着调用方自己的世界
+           （路径、障碍、积分器），env 无从知道它的几何是否与 dense_static 兼容；
+           把内置场景的 obstacles/path 递过去不是"补默认值"，而是拿别人的世界按
+           env 的剧本演。PhysicalCommandBridge(NumpySimBridge) 那种注入形态恰好就是
+           注入形态，且**静默**生效（桥照单全收，不报错）。
+        3. self.map_generator is None —— 调用方给了 map_generator，地图由它生成；
+           reset 的来源优先级已把 map_generator 排在默认场景之前，这里再挡一次
+           是为了让判据自身自洽（读判据即可知道谁负责世界）。
+        """
+        return (
+            options is None
+            and self._bridge_owned
+            and self.map_generator is None
+            and bool(self._default_scenario_name)
+        )
+
+    def _roll_seed(self, seed: int | None) -> int:
+        """默认场景本回合的重掷种子。
+
+        显式 seed ⇒ 用它本身（同 seed 两次 reset 得到同一张图）；seed=None ⇒
+        由 sensor_seed 派生并递增计数器（连续两次 reset 得到不同地图，同一
+        sensor_seed 的两个 env 掷出同一串地图）。显式 seed 把计数器钉回 1。
+        """
+        if seed is not None:
+            self._default_roll_index = 1
+            return int(seed)
+        roll = int(self.sensor_seed) * 1_000_003 + int(self._default_roll_index)
+        self._default_roll_index += 1
+        return roll
+
+    def _default_scene(self, seed: int | None) -> dict[str, Any]:
+        """默认场景的 reset options（场景 YAML 只加载一次）。"""
+        if self._default_scenario_obj is None:
+            from chassis_sim.scenarios import load_scenario
+
+            self._default_scenario_obj = load_scenario(str(self._default_scenario_name))
+        roll = self._roll_seed(seed)
+        from chassis_sim.scenarios import scenario_to_reset_options
+
+        options = dict(scenario_to_reset_options(self._default_scenario_obj, seed=roll))
+        obstacles = list(options.get("obstacles") or [])
+        options["obstacles"] = self._roll_obstacles(obstacles, roll)
+        return options
+
+    def _roll_obstacles(
+        self, obstacles: Sequence[Mapping[str, Any]], roll: int
+    ) -> list[dict[str, Any]]:
+        """在场景自带障碍上确定性地重掷一张"同族不同款"的地图。
+
+        抖动 ±0.10 m / ±0.10 rad，并按 15% 概率丢障碍（保底 6 个，否则密集场景
+        会越掷越稀）。同一 roll 逐位可复现；shape 字典原样保留，只动 state。
+        """
+        if not obstacles:
+            return []
+        rng = np.random.default_rng(int(roll))
+        out: list[dict[str, Any]] = []
+        for item in obstacles:
+            if (
+                len(obstacles) - len(out) > _OBSTACLE_MIN_KEEP
+                and rng.random() < _OBSTACLE_DROP_PROB
+            ):
+                continue
+            state = [float(_v) for _v in item.get("state", (0.0, 0.0, 0.0))]
+            state[0] += float(rng.uniform(-_OBSTACLE_JITTER_XY, _OBSTACLE_JITTER_XY))
+            state[1] += float(rng.uniform(-_OBSTACLE_JITTER_XY, _OBSTACLE_JITTER_XY))
+            if len(state) > 2:
+                state[2] += float(
+                    rng.uniform(-_OBSTACLE_JITTER_THETA, _OBSTACLE_JITTER_THETA)
+                )
+            out.append({**item, "state": state})
+        return out
+
+    # ── 渲染（3.0.0 W1）─────────────────────────────────────────────
+    def render(self):
+        """按 render_mode 渲染一帧：rgb_array ⇒ uint8 (H, W, 3)；human ⇒ None。"""
+        if self.render_mode is None:
+            gym.logger.warn(
+                "render() 被调用但 render_mode=None：请用 render_mode='human' 或 "
+                "'rgb_array' 构造 env"
+            )
+            return None
+        from chassis_sim.render import render_to_array
+
+        pixels = render_to_array(self.bridge)
+        if self.render_mode == "rgb_array":
+            return pixels
+        self._show_pixels(pixels)
+        return None
+
+    def _show_pixels(self, pixels: np.ndarray) -> None:
+        """human 模式：贴到一张可复用 Figure 上并刷屏。
+
+        非交互后端（Agg 等）只画不 pause —— plt.pause 在那种后端只会刷一条
+        "non-GUI backend" 警告，不能显示任何东西。窗口图仍留在 _render_fig 上，
+        调用方可自行 savefig。
+        """
+        import matplotlib
+        import matplotlib.pyplot as plt
+
+        if self._render_fig is None:
+            self._render_fig, self._render_ax = plt.subplots()
+        self._render_ax.clear()
+        self._render_ax.imshow(pixels)
+        self._render_ax.set_axis_off()
+        if str(matplotlib.get_backend()).lower() not in _NON_INTERACTIVE_BACKENDS:
+            plt.pause(0.001)
+
     def close(self):
+        self._render_fig = None
+        self._render_ax = None
         self.bridge.close()

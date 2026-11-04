@@ -1,15 +1,15 @@
-"""折线与几何工具：从主仓 benchmarks/controllers.py 逐字移植，外加纯追踪所需的弧长工具。
+"""折线与几何工具：折线构造 / 投影 / 查询、障碍净空，外加纯追踪所需的弧长工具。
 
-逐字来源（/home/zhao/drl-sim/benchmarks/controllers.py，行号为该文件 1-based 行号）：
+函数分组：
 
-    wrap_angle          L54-56
-    path_segments       L80-87
-    _segment_distances  L90-111
-    polyline_project    L114-124
-    polyline_query      L126-129
-    obstacle_clearance  L227-266
+    wrap_angle          角度归一化到 [-pi, pi)
+    path_segments       折线拆分（起点 / 终点 / 起点鼻向）
+    _segment_distances  逐段距离平方与段内投影比例
+    polyline_project    折线投影（距离 / 最近段索引 / 段内 t）
+    polyline_query      距离 + 最近段起点的鼻向
+    obstacle_clearance  障碍边界净空（圆 / 矩形）
 
-新增（主仓无对应实现）：as_path、arc_lengths、point_at_arc、windowed_project。
+弧长工具（纯追踪用）：as_path、arc_lengths、point_at_arc、windowed_project。
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ _TWO_PI = 2.0 * np.pi
 
 
 def wrap_angle(a):
-    """把角度归一化到 [-pi, pi)；标量入标量出，数组入数组出。（主仓 L54-56）"""
+    """把角度归一化到 [-pi, pi)；标量入标量出，数组入数组出。"""
     return (np.asarray(a, dtype=np.float64) + np.pi) % _TWO_PI - np.pi
 
 
@@ -51,14 +51,14 @@ def as_path(path):
 
 
 def path_segments(path):
-    """把 (N,3) 路径拆成折线段：(起点 (M,2), 终点 (M,2), 起点鼻向 (M,))。（主仓 L80-87）"""
+    """把 (N,3) 路径拆成折线段：(起点 (M,2), 终点 (M,2), 起点鼻向 (M,))。"""
     if path.shape[0] == 1:
         return path[:, :2].copy(), path[:, :2].copy(), path[:, 2].copy()
     return path[:-1, :2], path[1:, :2], path[:-1, 2]
 
 
 def _segment_distances(px, py, segs):
-    """点集到**每一条**折线段的距离平方 + 段内投影比例：返回 (d2 (P,M), t (P,M))。（主仓 L90-111）"""
+    """点集到**每一条**折线段的距离平方 + 段内投影比例：返回 (d2 (P,M), t (P,M))。"""
     ax, ay = segs[0][:, 0], segs[0][:, 1]
     bx, by = segs[1][:, 0], segs[1][:, 1]
     ex = bx - ax
@@ -78,7 +78,7 @@ def _segment_distances(px, py, segs):
 def polyline_project(px, py, segs):
     """点集到折线的最近距离 + 最近段索引 + 段内位置 t。返回 (dist (P,), idx (P,), t (P,))。
 
-    （主仓 L114-124：对 d2 取 argmin、只对选中项开方。）
+    （对 d2 取 argmin、只对选中项开方。）
     """
     d2, t = _segment_distances(px, py, segs)
     idx = np.argmin(d2, axis=1)
@@ -87,7 +87,7 @@ def polyline_project(px, py, segs):
 
 
 def polyline_query(px, py, segs):
-    """点集到折线的最近距离 + 最近段起点的鼻向：返回 (dist (P,), theta_ref (P,))。（主仓 L126-129）"""
+    """点集到折线的最近距离 + 最近段起点的鼻向：返回 (dist (P,), theta_ref (P,))。"""
     dist, idx, _ = polyline_project(px, py, segs)
     return dist, segs[2][idx]
 
@@ -115,7 +115,7 @@ def windowed_project(px, py, segs, anchor, back=10, fwd=40):
 
 
 def obstacle_clearance(px, py, obstacles):
-    """点集到最近障碍物**边界**的最近距离（无障碍时全 +inf）。（主仓 L227-266）
+    """点集到最近障碍物**边界**的最近距离（无障碍时全 +inf）。
 
     支持 {"shape": {"name": "circle", "radius": r}, "state": [x, y, theta]} 与
     {"shape": {"name": "rectangle", "length": l, "width": w}, ...}。
@@ -153,7 +153,7 @@ def obstacle_clearance(px, py, obstacles):
     return out
 
 
-# ── 弧长工具（纯追踪用；主仓无对应实现）─────────────────────────────
+# ── 弧长工具（纯追踪用）─────────────────────────────────────────────
 
 
 def arc_lengths(path):

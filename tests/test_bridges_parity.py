@@ -24,6 +24,14 @@
 
 最后是**反向对照**：把 `step` 换成 `command`（不滞后）重放同一串动作，
 位姿偏差必须 > 1e-3 m —— 否则说明这个对拍根本分辨不出转向滞后。
+
+⚠️ 2026-11-05 起 `Chassis.integrate` 是**闭式**积分，而这份 golden 是旧桥
+（Euler）录的。断言阶段因此分两支：
+
+* `replay`（legacy）—— 把 `integrate` 钉回旧 Euler 再重放，与 golden 的
+  位姿 / 双 LiDAR / 里程计 / 布尔量**逐通道**对拍；这一支锁死"桥的执行层没变"。
+* `replay_closed` —— 生产实现重放，只用来量它与旧记录的差：
+  θ 通道逐位相同、xy 差 ≈ 3.4e-2 m，恰好是换成闭式积分该有的差别。
 """
 
 from __future__ import annotations
@@ -38,7 +46,7 @@ import numpy as np
 import pytest
 
 from chassis_sim.bridges import SimpleBridge
-from chassis_sim.chassis import AckermannChassis
+from chassis_sim.chassis import AckermannChassis, Chassis
 from chassis_sim.sensors import Lidar
 
 _DRL_SIM = "/home/zhao/drl-sim"
@@ -304,8 +312,36 @@ class _NoLagAckermann(AckermannChassis):
         return self.command(action)
 
 
-def _replay(golden: dict, chassis_factory=AckermannChassis) -> list:
-    params = _golden_params(golden)
+def _euler_integrate(chassis, x, y, theta, cmd, dt):
+    """改动前的 integrate（2026-11-05 之前）：一阶 Euler，乘加顺序照抄原件。
+
+    bridge_golden.json 是旧桥的全通道记录，而旧桥用的是这条算术；把它钉回去
+    才能逐通道对拍，否则 xy 差 3.4e-2 会淹掉真正要找的桥侧回归。
+    """
+    v, omega, vy = cmd.v, cmd.omega, cmd.vy
+    cos_t = np.cos(theta)
+    sin_t = np.sin(theta)
+    return (
+        x + (v * cos_t - vy * sin_t) * dt,
+        y + (v * sin_t + vy * cos_t) * dt,
+        theta + omega * dt,
+    )
+
+
+def _replay(
+    golden: dict, chassis_factory=AckermannChassis, *, legacy: bool = False
+) -> list:
+    if legacy:
+        original = Chassis.integrate
+        Chassis.integrate = _euler_integrate
+        try:
+            return _replay_inner(golden, chassis_factory, _golden_params(golden))
+        finally:
+            Chassis.integrate = original
+    return _replay_inner(golden, chassis_factory, _golden_params(golden))
+
+
+def _replay_inner(golden: dict, chassis_factory, params: dict) -> list:
     results = []
     for rec in golden["scenarios"]:
         chassis = chassis_factory()
@@ -360,6 +396,13 @@ def golden() -> dict:
 
 @pytest.fixture(scope="module")
 def replay(golden: dict) -> list:
+    """按旧桥的积分式（Euler）重放：与 golden 逐通道对拍的那一支。"""
+    return _replay(golden, legacy=True)
+
+
+@pytest.fixture(scope="module")
+def replay_closed(golden: dict) -> list:
+    """生产实现（闭式积分）重放：只用来量它与旧记录的差。"""
     return _replay(golden)
 
 
@@ -428,9 +471,37 @@ def test_goal_heading_parity(golden: dict, replay: list) -> None:
         )
 
 
+def test_closed_form_differs_only_in_xy(golden: dict, replay_closed: list) -> None:
+    """生产闭式积分 vs 旧桥记录：θ 逐位相同，xy 的差只来自积分式。
+
+    反向锁定：若有人把 integrate 改回 Euler，d_xy 会塌到 0，这条就红；
+    若有人把闭式实现写错（例如 ω≠0 仍走 Euler），同样红。
+    """
+    for rec, got in zip(golden["scenarios"], replay_closed):
+        exp = _floats(rec["poses"])
+        d_xy = float(np.max(np.abs(got["poses"][:, :2] - exp[:, :2])))
+        d_th = float(np.max(np.abs(_wrap(got["poses"][:, 2] - exp[:, 2]))))
+        print(
+            f"[闭式 vs 旧记录] {rec['name']}: max|Δx,Δy|={d_xy:.3e}  max|Δθ|={d_th:.3e}"
+        )
+        assert d_th == 0.0, f"{rec['name']}: θ 通道被积分式改动了 {d_th}"
+        if np.any(_wrap(np.diff(exp[:, 2])) != 0.0):
+            # 转过向 ⇒ 闭式的 A/B 项与 Euler 不同，差必须看得见
+            assert d_xy > TOL_POSE, (
+                f"{rec['name']}: 闭式与 Euler 无差（{d_xy}）——积分式退化了"
+            )
+            if rec["name"] == "random_240":
+                assert 3.0e-2 <= d_xy <= 3.7e-2, (
+                    f"random_240 的差 {d_xy:.3e} 超出记录区间"
+                )
+        else:
+            # ω≡0 的直线场景 ⇒ 闭式走退化分支，必须与旧 Euler 逐位相同
+            assert d_xy == 0.0, f"{rec['name']}: ω=0 分支不再逐位相同（{d_xy}）"
+
+
 def test_reverse_control_detects_lag(golden: dict) -> None:
     """反向对照：无滞后同款底盘 ⇒ 偏差必须显著（> 1e-3 m）。"""
-    no_lag = {r["name"]: r for r in _replay(golden, _NoLagAckermann)}
+    no_lag = {r["name"]: r for r in _replay(golden, _NoLagAckermann, legacy=True)}
     rec = golden["scenarios"][0]
     exp = _floats(rec["poses"])
     got = no_lag[rec["name"]]["poses"]

@@ -1,34 +1,33 @@
-"""DWA（Dynamic Window Approach）：从主仓 /home/zhao/drl-sim/benchmarks/controllers.py:371
-的 `DwaController` 移植，改成 `Controller` 协议（构造时 `set_path`、逐帧 `act`）。
+"""DWA（Dynamic Window Approach）：速度窗口内采样 (ω, v) 并按四项加权代价选优，
+实现 `Controller` 协议（构造时 `set_path`、逐帧 `act`）。
 
 输入契约
 --------
 `act(observation)` 只吃位姿与（可选）障碍，**没有速度输入**：
 
     observation["pose"]       (3,) [x, y, θ] 世界系（必需）
-    observation["obstacles"]  可选，主仓同构的 [{"shape": {...}, "state": [x,y,θ]}, ...]
+    observation["obstacles"]  可选，[{"shape": {...}, "state": [x,y,θ]}, ...]
     observation["dt"]         可选，覆盖构造期的控制周期
 
 **无 obstacles 键 / 空列表 ⇒ 按"无遮挡直行"退化**：`obstacle_clearance` 全返 +inf 且
-`if obstacles:` 分支整段跳过，避障代价恒为 0，选优只剩路径/速度/平滑三项 —— 与主仓
-`get_action(..., obstacles=None)` 完全同语义。
+`if obstacles:` 分支整段跳过，避障代价恒为 0，选优只剩路径/速度/平滑三项。
 
 采样空间由 (δ, v) 改为 (ω, v)
 -----------------------------
-主仓按阿克曼 (δ, v) 网格采样并在 `_score` 里用 `v·tanδ/L` 前推。本实现要把同一套代价
+原实现按阿克曼 (δ, v) 网格采样并用 `v·tanδ/L` 前推。本实现要把同一套代价
 用在三种底盘上，因此**直接按 (ω, v) 采样**（差速/麦轮没有 δ），前推式相同：
 
     x += v·cosθ·dt ; y += v·sinθ·dt ; θ += ω·dt
 
-阿克曼需要时由 `to_chassis_action` 反解 δ = arctan(ω·L/v)，与主仓的
+阿克曼需要时由 `to_chassis_action` 反解 δ = arctan(ω·L/v)，与
 `x += v·cosθ·dt ... θ += v/L·tanδ·dt` 逐项等价。其余代价项、权重默认值、候选预算
-（6×9 网格 + 5 个细化 = 59 ≤ 63）与主仓逐项一致；平滑项的自变量随之由 δ 变为 ω
+（6×9 网格 + 5 个细化 = 59 ≤ 63）与原实现逐项一致；平滑项的自变量随之由 δ 变为 ω
 （权重 `w_smooth` 的默认值沿用 0.4，量纲从 rad 变成 rad/s，见报告"差异清单"）。
 
-相对主仓的四处**行为变更**（2026-11-04；1)/2) 由 obstacles_dense 的"原地抖 400 步"
+相对原实现的四处**行为变更**（2026-11-04；1)/2) 由 obstacles_dense 的"原地抖 400 步"
 定位，3) 由 obstacles_dense_reverse 的"0% / 500 步超时"定位，4) 是可选档位语义）
 -----------------------------------------------------------------------------
-1) `heading_mode="axis"`（新默认）：主仓的 `w_heading·herr²` 用**鼻向**判据。路径在折返点
+1) `heading_mode="axis"`（新默认）：原实现的 `w_heading·herr²` 用**鼻向**判据。路径在折返点
    （cusp）前后两条腿的鼻向差近 π，于是"沿倒车腿正常行驶"被判成 π 的航向误差（罚
    `0.3·π² ≈ 2.96`），代价地形在 cusp 之前形成局部极小 —— 实测机器人卡在 cusp 前 0.2 m 处
    来回抖 400 步、成功率 0%。axis 模式只罚"车轴与路径轴向"的错位，不区分车头朝前还是朝后。
@@ -42,8 +41,8 @@
    obstacles_dense_reverse 由 0% / 500 步变成 100% / 145 步。
 前两处合起来把 obstacles_dense 从 0% 成功率提到 100%（翻转次数 87 → 0）。
 4) 档位（gear）语义（`gear_mode="auto"`，**可选档，默认 "off"**）：路径第 3 列存的是**鼻向**
-   而不是运动方向（RS 积分），倒车段的判据是"段运动方向与鼻向夹角 > π/2"（与主仓
-   `AckermannEnv.segment_is_reverse` 同源；方向用弧长 ±`gear_dir_window` 窗口的中心差分，
+   而不是运动方向（RS 积分），倒车段的判据是"段运动方向与鼻向夹角 > π/2"（与
+   `segment_is_reverse` 同源；方向用弧长 ±`gear_dir_window` 窗口的中心差分，
    单段差分在 cusp 处不可信）。auto 档沿弧长定位当前段（再前探 `gear_lookahead`）后：候选
    速度截到本档半轴（前进 [0, v_max] / 倒车 [v_min, 0]），航向项改用**运动方向**
    （`θ + π·[v<0]`），进度项只在候选末端落在本档段时给正分。换档带票数滞回（`gear_votes`）
@@ -85,7 +84,7 @@ _PROG_BACK_CLIP = 0.5
 
 
 class _LastCallMemo:
-    """“同输入同输出”护栏（主仓 L307-334 逐字移植）。
+    """“同输入同输出”护栏。
 
     DWA 带内部状态（平滑项参考上一帧 ω、差分测速），连调两次同参数结果会差在低位；
     契约要求确定性，因此输入逐位相同时直接复用上一次输出。
@@ -110,7 +109,7 @@ class _LastCallMemo:
 
 
 class _DiffEstimator:
-    """位姿差分测速：只给位姿的接口下拿到 (v, ω) 的手段（主仓 L336-368 逐字移植）。"""
+    """位姿差分测速：只给位姿的接口下拿到 (v, ω) 的手段。"""
 
     def __init__(self, dt: float) -> None:
         self.dt = float(dt)
@@ -143,7 +142,7 @@ class _DiffEstimator:
 
 
 def _signature(xy, theta, path, obstacles):
-    """输入指纹，用于“同输入同输出”护栏（主仓 L282-304 逐字移植）。"""
+    """输入指纹，用于“同输入同输出”护栏。"""
     h = hashlib.blake2b(digest_size=16)
     h.update(np.ascontiguousarray(xy, dtype=np.float64).tobytes())
     h.update(np.float64(theta).tobytes())
@@ -197,8 +196,7 @@ def _smoothed_tangents(path: np.ndarray, s_cum: np.ndarray, half_window: float):
 def _segment_gears(path: np.ndarray, dirs: np.ndarray):
     """段档位：运动方向与**鼻向**夹角 > π/2 ⇒ −1（倒车段），否则 +1（前进段）。
 
-    与主仓 `AckermannEnv.segment_is_reverse`（点积 `mdx·cos(nose) + mdy·sin(nose) >= 0`）
-    同判据，只是把"点积"写成"夹角余弦"，两者在边界上给出同一集合。
+    判据点积形式 `mdx·cos(nose) + mdy·sin(nose) >= 0`；这里把"点积"写成"夹角余弦"，两者在边界上给出同一集合。
     """
     return np.where(np.cos(dirs - path[:-1, 2]) >= 0.0, 1.0, -1.0)
 
@@ -206,12 +204,12 @@ def _segment_gears(path: np.ndarray, dirs: np.ndarray):
 class DwaController(Controller):
     """DWA 基线：速度窗口内采样 (ω, v)，按四项加权代价选最优，输出 (v, ω)。
 
-    代价（与主仓 L371 起的 DwaController 同构）：
+    代价（四项加权）：
 
     a) 路径跟踪 `w_path·d_end² + w_heading·herr²`，另加 `w_cte_traj` 乘整条预测轨迹的
        平均 CTE²（只看到末端时低速短时域拿不到横向修正的梯度）；herr = wrap(**运动方向** −
        参考方向)，参考方向由 `heading_mode` 决定（默认 "axis" = 段的运动方向，与鼻向列
-       无关；"nose" = 主仓的鼻向判据）；"axis" 仍对 herr 做模 π 折叠；
+       无关；"nose" = 鼻向判据）；"axis" 仍对 herr 做模 π 折叠；
 
     a2) 弧长进度 `−w_prog·Δs`（默认 2.0）：Δs 是候选末端相对当前位姿在**路径弧长坐标**
        上前进的距离，后退为负（饱和于 `_PROG_BACK_CLIP`）。缺了这一项时"停着"与
@@ -227,7 +225,7 @@ class DwaController(Controller):
 
     档位（gear）：`gear_mode="off"` 是**默认** —— 候选跨整个 [v_min, v_max] 采样、代价不分
     档位（倒车能力由上面的弧长前瞻参考提供，实测已足够）。`gear_mode="auto"` 是可选项：
-    按路径段判定当前该用前进档还是倒车档（判据与主仓 `segment_is_reverse` 同源），候选空间
+    按路径段判定当前该用前进档还是倒车档（判据同 `segment_is_reverse`），候选空间
     随之截到半轴、航向项用**运动方向**、进度项只在候选末端落在本档段时给正分；换档带
     `gear_votes` 票数与 `gear_hold_steps` 最小保持步数的滞回，`gear_switches` 可读。
     不改协议、不加随机。硬档位需配合 `min_speed` 才不退化到"停住"，且对
@@ -318,9 +316,7 @@ class DwaController(Controller):
         self._seg_gear = None  # 每段的档位：+1 前进 / −1 倒车
 
         # 档位滞回状态（回合边界由 _reset_gear 清空）
-        self._gear = (
-            None  # None = 尚未定档（首次 act 直接采纳 raw，同主仓 GearVoteLag）
-        )
+        self._gear = None  # None = 尚未定档（首次 act 直接采纳 raw）
         self._gear_vote = 0.0
         self._gear_hold = 0
         self.gear_switches = 0
@@ -488,7 +484,7 @@ class DwaController(Controller):
     def _update_gear(self, x, y) -> None:
         """按当前位置的路径段更新档位（票数滞回 + 最小保持步数）。
 
-        滞回形状与主仓 `GearVoteLag` 同构：票数 `_gear_vote` 在 [−votes, +votes] 饱和，
+        滞回形状：票数 `_gear_vote` 在 [−votes, +votes] 饱和，
         只有触边才换档，过渡期保持上一稳定档位 ⇒ `votes` 步之内的单帧抖动翻不了档，
         `votes=3` 相当于至少 6 步驻留。`gear_hold_steps` 是叠在上面的硬下限
         （`votes=1` 时票数两步就能跨越，靠它保住最小驻留）。
@@ -502,7 +498,7 @@ class DwaController(Controller):
         # 档位按"当前位置 +gear_lookahead 处的段"判定，而不是脚下那一段：车会贴在
         # cusp 前 7 cm 停住（本段只剩 7 cm，进也罚退也罚），若只看本段则换档永远等不到。
         raw = float(self._seg_gear[self._index_at(s_now + self.gear_lookahead)])
-        if self._gear is None:  # 首步直接采纳 raw（同主仓 GearVoteLag）
+        if self._gear is None:  # 首步直接采纳 raw
             self._gear = raw
             self._gear_vote = raw * float(self.gear_votes)
             self._gear_hold = 0

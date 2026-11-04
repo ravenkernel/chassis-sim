@@ -50,8 +50,32 @@ def _flat_f32(value, *, dim: int, who: str) -> np.ndarray:
     return arr
 
 
+@dataclass(frozen=True)
+class BoundContext:
+    """观测段物理界的推导输入（SI 单位，env 构造期算一次）。
+
+    只收**能推出硬界**的环境量：往这里加字段，就是给某一段发"可以宣称有界"的
+    许可证。拿不到依据的段保持 ±inf（见 Segment.bounds），由 check_env 点名。
+    """
+
+    dt: float
+    v_max: float
+    v_min: float
+    vy_max: float
+    omega_max: float
+    lookahead: float
+    world_diag: float
+    #: 传感器名 -> (range_min, max_range)，只有 lidar 段会读
+    lidar: Mapping[str, tuple[float, float]]
+
+
+def _bounds_inf(dim: int) -> tuple[np.ndarray, np.ndarray]:
+    low = np.full(int(dim), -np.inf, dtype=np.float64)
+    return low, np.full(int(dim), np.inf, dtype=np.float64)
+
+
 class Segment:
-    """段协议：name + dim + build(ctx) -> float32[dim]。"""
+    """段协议：name + dim + build(ctx) -> float32[dim] + bounds(ctx) -> (low, high)。"""
 
     name: str
     dim: int
@@ -63,6 +87,14 @@ class Segment:
     def build(self, ctx: ObsContext) -> np.ndarray:
         raise NotImplementedError
 
+    def bounds(self, ctx: BoundContext) -> tuple[np.ndarray, np.ndarray]:
+        """本段每维的物理上下界，形状各自 (dim,)。
+
+        默认 ±inf：没有推导依据的段（Custom、未声明量程的 lidar 传感器）**不猜**。
+        Box 因此保持非有限，check_env 会点名 —— 这是信号，不是缺陷。
+        """
+        return _bounds_inf(self.dim)
+
 
 class Odom(Segment):
     """里程计相对位姿：dim=4。"""
@@ -72,6 +104,19 @@ class Odom(Segment):
 
     def build(self, ctx: ObsContext) -> np.ndarray:
         return _flat_f32(ctx.odom_rel, dim=self.dim, who="Odom.build")
+
+    def bounds(self, ctx: BoundContext) -> tuple[np.ndarray, np.ndarray]:
+        """dx/dy：单步体坐标位移 ×10；v：执行值量程；ω：角速度量程。
+
+        v/ω 两维是桥回报的**执行值**，已被底盘夹在 [v_min, v_max] / ±ω_max 内。
+        位移两维 = 10·Δs，Δs ≤ dt·(|v|max + vy_max)（麦轮横移与纵移同一拍发生，
+        按和取上界）；1.5 倍余量留给里程计漂移、量化与 float32 表示误差。
+        """
+        span = max(abs(ctx.v_max), abs(ctx.v_min)) + max(float(ctx.vy_max), 0.0)
+        disp = 10.0 * 1.5 * float(ctx.dt) * span
+        low = np.array([-disp, -disp, float(ctx.v_min), -float(ctx.omega_max)])
+        high = np.array([disp, disp, float(ctx.v_max), float(ctx.omega_max)])
+        return low, high
 
 
 class PathSegment(Segment):
@@ -96,6 +141,25 @@ class PathSegment(Segment):
             who=f"PathSegment(points={self.points}).build",
         )
 
+    def bounds(self, ctx: BoundContext) -> tuple[np.ndarray, np.ndarray]:
+        """ρ ∈ [0, diag+lookahead+0.1]，sinφ/cosφ ∈ [-1,1]，dθ ∈ [-π,π]。
+
+        ρ 是**车体系欧氏距离**（paths.cartesian_to_polar: ρ = hypot(dx, dy)），
+        不是沿路径的弧长。PathExtractor 只保留"最近路点之后 lookahead 弧长内"
+        的点，末端不足时按 0.1 m 步长外推（_fill_lookahead），于是
+        ρ ≤ ρ_nearest + lookahead + 0.1；车与路径都在 world_bounds 内
+        ⇒ ρ_nearest ≤ diag（越界位姿由 env 计入 info["obs_clipped"]）。
+        整条路径短于 lookahead 时末点被复用（padding），仍落在同一界内。
+        """
+        rho_max = float(ctx.world_diag) + float(ctx.lookahead) + 0.1
+        low = np.empty(self.dim, dtype=np.float64)
+        high = np.empty(self.dim, dtype=np.float64)
+        low[0::4], high[0::4] = 0.0, rho_max  # rho
+        low[1::4], high[1::4] = -1.0, 1.0  # sin_phi
+        low[2::4], high[2::4] = -1.0, 1.0  # cos_phi
+        low[3::4], high[3::4] = -np.pi, np.pi  # dtheta
+        return low, high
+
 
 class Goal(Segment):
     """终点在车体系中的位置：dim=2。"""
@@ -105,6 +169,11 @@ class Goal(Segment):
 
     def build(self, ctx: ObsContext) -> np.ndarray:
         return _flat_f32(ctx.goal, dim=self.dim, who="Goal.build")
+
+    def bounds(self, ctx: BoundContext) -> tuple[np.ndarray, np.ndarray]:
+        """终点在车体系中的 (x, y)：车与终点都在 world_bounds 内 ⇒ |·| ≤ diag。"""
+        d = float(ctx.world_diag)
+        return np.array([-d, -d]), np.array([d, d])
 
 
 class Act(Segment):
@@ -123,6 +192,10 @@ class Act(Segment):
             ctx.act, dim=self.dim, who=f"Act(action_dim={self.action_dim}).build"
         )
 
+    def bounds(self, ctx: BoundContext) -> tuple[np.ndarray, np.ndarray]:
+        """上一拍动作是**归一化**量，恒在 [-1,1]（见 env._physical_action）。"""
+        return np.full(self.dim, -1.0), np.full(self.dim, 1.0)
+
 
 class Err(Segment):
     """CTE 归一化 + 航向误差：dim=2。"""
@@ -132,6 +205,10 @@ class Err(Segment):
 
     def build(self, ctx: ObsContext) -> np.ndarray:
         return _flat_f32(ctx.err, dim=self.dim, who="Err.build")
+
+    def bounds(self, ctx: BoundContext) -> tuple[np.ndarray, np.ndarray]:
+        """CTE 在 ContextBuilder 里已 clip 到 ±1；航向误差经 wrap 落在 ±π。"""
+        return np.array([-1.0, -np.pi]), np.array([1.0, np.pi])
 
 
 class GoalSig(Segment):
@@ -143,6 +220,10 @@ class GoalSig(Segment):
     def build(self, ctx: ObsContext) -> np.ndarray:
         return _flat_f32(ctx.goal_sig, dim=self.dim, who="GoalSig.build")
 
+    def bounds(self, ctx: BoundContext) -> tuple[np.ndarray, np.ndarray]:
+        """sin/cos(终点航向误差)：解析上界就是 ±1。"""
+        return np.full(self.dim, -1.0), np.full(self.dim, 1.0)
+
 
 class PathValid(Segment):
     """真实路点占比：dim=1。"""
@@ -152,6 +233,10 @@ class PathValid(Segment):
 
     def build(self, ctx: ObsContext) -> np.ndarray:
         return _flat_f32(ctx.path_valid, dim=self.dim, who="PathValid.build")
+
+    def bounds(self, ctx: BoundContext) -> tuple[np.ndarray, np.ndarray]:
+        """真实路点占比是分数 ⇒ [0,1]。"""
+        return np.zeros(self.dim), np.ones(self.dim)
 
 
 class PathProgress(Segment):
@@ -166,6 +251,10 @@ class PathProgress(Segment):
         # 挡在观测之外（观测一写进 buffer 就会污染整个训练）。
         arr = np.nan_to_num(arr, nan=0.0, posinf=1.0, neginf=0.0)
         return np.clip(arr, 0.0, 1.0)
+
+    def bounds(self, ctx: BoundContext) -> tuple[np.ndarray, np.ndarray]:
+        """build() 已经把这一维夹进 [0,1]，界就是它自己。"""
+        return np.zeros(self.dim), np.ones(self.dim)
 
 
 class LidarSegment(Segment):
@@ -273,6 +362,30 @@ class LidarSegment(Segment):
         stacked = np.stack(parts, axis=0)
         pooled = stacked.max(axis=0) if self.pool == "max" else stacked.mean(axis=0)
         return np.asarray(pooled, dtype=np.float32)
+
+    def bounds(self, ctx: BoundContext) -> tuple[np.ndarray, np.ndarray]:
+        """每根射线 ∈ 该传感器的 [range_min, max_range]。
+
+        SensorSuite 的处理顺序是 原始量程 → clip → 加噪 → 再 clip → 量化
+        （sensors/suite.py），所以加噪也不会把射线推出量程。
+        pool="max"/"mean" 取所引用传感器的包络；任一传感器没在 env 侧声明量程
+        就整段退回 ±inf —— 不猜。
+        """
+        counts = self._counts()
+        per = [
+            (float(ctx.lidar[s][0]), float(ctx.lidar[s][1]))
+            if s in ctx.lidar
+            else (-np.inf, np.inf)
+            for s in self.sensors
+        ]
+        if self.pool != "none":
+            width = self._pooled_width(counts)
+            lo = min(p[0] for p in per)
+            hi = max(p[1] for p in per)
+            return np.full(width, lo), np.full(width, hi)
+        lows = [np.full(counts[s], lo) for s, (lo, _hi) in zip(self.sensors, per)]
+        highs = [np.full(counts[s], hi) for s, (_lo, hi) in zip(self.sensors, per)]
+        return np.concatenate(lows), np.concatenate(highs)
 
 
 class Custom(Segment):
@@ -392,6 +505,43 @@ class ResolvedObsSpec:
         if fused.dtype != np.float32:
             raise ValueError(f"ObsSpec.build: 拼接结果应为 float32，实际 {fused.dtype}")
         return fused
+
+    def bounds(self, ctx: BoundContext) -> tuple[np.ndarray, np.ndarray]:
+        """逐段拼出 observation_space 的上下界（float32，与 build() 同宽同序）。
+
+        宽度按段校验：任何一段给出错误宽度都在这里报错，而不是先构造出一个
+        "能 contains 但错位"的 Box。结果再向两侧各扩 1 ulp —— float64 → float32
+        的舍入若是向内的，一个恰好等于界的合法值会变成"越界 1 ulp"，让
+        _clip_obs 白记一次；扩展只动有限数，±inf 原样保留。
+        """
+        lows, highs = [], []
+        for seg in self.segments:
+            low, high = seg.bounds(ctx)
+            low = np.asarray(low, dtype=np.float64).ravel()
+            high = np.asarray(high, dtype=np.float64).ravel()
+            if low.size != seg.dim or high.size != seg.dim:
+                raise ValueError(
+                    f"ObsSpec.bounds: 段 {seg.name!r} 期望 {seg.dim} 维界，"
+                    f"实际 low={low.size} high={high.size}"
+                )
+            lows.append(low)
+            highs.append(high)
+        low32 = np.concatenate(lows).astype(np.float32)
+        high32 = np.concatenate(highs).astype(np.float32)
+        # 只扩非零的有限值：0.0 转 float32 精确，不会向内舍入；而 0 扩 1 ulp 会落到
+        # denormal（下游 np.allclose 之类的相乘会报 underflow，纯噪声）。
+        with np.errstate(under="ignore"):
+            low32 = np.where(
+                np.isfinite(low32) & (low32 != 0.0),
+                np.nextafter(low32, np.float32(-np.inf)),
+                low32,
+            )
+            high32 = np.where(
+                np.isfinite(high32) & (high32 != 0.0),
+                np.nextafter(high32, np.float32(np.inf)),
+                high32,
+            )
+        return low32, high32
 
     def __repr__(self) -> str:
         return (

@@ -1,9 +1,9 @@
-"""Hybrid-A* 全局规划 + Reeds-Shepp 曲线 + 课程地图生成（移植自主仓 drl-sim/envs）。
+"""Hybrid-A* 全局规划 + Reeds-Shepp 曲线 + 课程地图生成。
 
-三个模块与主仓逐行一致，只动了两处 import：
+三个模块（hybrid_astar / map_generator / rs_curve）共用两处 import 约定：
 
-1. `envs.xxx` → `chassis_sim.envs.xxx` / `chassis_sim.planning.xxx`；
-2. `from numba import jit` → try/except + 恒等装饰器 —— numba 是 **可选**
+1. 一律用绝对导入 `chassis_sim.envs.xxx` / `chassis_sim.planning.xxx`；
+2. `from numba import jit` 走 try/except + 恒等装饰器 —— numba 是 **可选**
    加速器（extra: planning），core 安装（无 numba）下 `import chassis_sim.planning`
    不得失败，只是规划变慢。
 
@@ -14,8 +14,8 @@
     obstacles, path, goal_heading, initial_heading = mg.generate(
         np.random.default_rng(0))
 
-`MapGenerator` 的构造参数与主仓同名同默认值（`(stage_config, defaults=None,
-stage_index=-1, *, env_cfg=None)`），因此既有调用方可以原样搬过来。
+构造参数保持兼容（`(stage_config, defaults=None, stage_index=-1, *,
+env_cfg=None)`），因此既有调用方可以原样搬过来。
 """
 
 from __future__ import annotations
@@ -78,8 +78,8 @@ def make_map_generator(
 ) -> MapGenerator:
     """按 curriculum.yaml 装配 `MapGenerator`。
 
-    等价于主仓 `training/builder.py` 的 `_build_curriculum`：stage 配置 +
-    defaults 一起传给 `MapGenerator`，并把阶段索引交给 reward 的 stage_scale。
+    装配方式：stage 配置 + defaults 一起传给 `MapGenerator`，并把阶段索引
+    交给 reward 的 stage_scale。
 
     Args:
         curriculum: 已解析的课程 dict；None 时读包内 curriculum.yaml。

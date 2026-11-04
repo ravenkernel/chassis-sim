@@ -1,7 +1,7 @@
 """chassis-sim：三种底盘的 Gymnasium 环境。
 
-import 本包即注册三个 id（ChassisSim-Ackermann-v0 / ChassisSim-DiffDrive-v0 /
-ChassisSim-Mecanum-v0）。注册逻辑在 gym_registration.py，只依赖 gymnasium：
+import 本包即注册三个 id（ChassisSim-Ackermann-v1 / ChassisSim-DiffDrive-v1 /
+ChassisSim-Mecanum-v1）。注册逻辑在 gym_registration.py，只依赖 gymnasium：
 环境本体按 entry_point 字符串延迟 import，不拉起 numba / matplotlib / torch。
 
 1.0.0 起顶层就是公共 API：配置（EnvConfig / RewardConfig）、统一入口 make()、
@@ -25,7 +25,7 @@ from typing import Any
 
 from . import gym_registration as _gym_registration  # noqa: F401 - 注册副作用
 
-__version__ = "2.0.0"
+__version__ = "3.0.0"
 
 #: 公共名 -> 定义它的模块。__all__ 是它的键（外加 __version__），
 #: tests/test_api_make.py 锁死两者一致，避免导出名与模块表走散。

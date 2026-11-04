@@ -1494,7 +1494,7 @@ class MapGenerator:
         与 ``NumpySimBridge._check_collision`` 语义等价（逐位姿复刻，不做近似）：
         - 矩形障碍：车体 OBB vs 障碍 OBB 的 4 轴 SAT（机器人自身 2 轴 + 障碍 2 轴）
         - 圆形障碍：车体四角落入"圆 + margin" ∪ 圆心落入"车体矩形 ± (half + r)"
-          （bridge 用后者做保守判定，角落处比精确圆-矩形距离更严格，必须照抄）
+          （bridge 用后者做保守判定，角落处比精确圆-矩形距离更严格，两处必须保持一致）
         - 世界边界：与 bridge 相同的**按朝向**轴对齐包围盒判定（0.05 m margin，
           旋转后的半宽/半高，P2-16）
         障碍在 margin 上外扩 ``ROBOT_COLLISION_MARGIN``（与 bridge 的 0.03 一致）。
@@ -1525,7 +1525,8 @@ class MapGenerator:
             # ── 圆形障碍：复刻 NumpySimBridge._check_collision 的两项判定 ──
             # (a) 车体四角落入圆内 (半径 + margin)
             # (b) 圆心落入"车体矩形外扩 r"的 AABB（bridge 的保守判定，角落处比
-            #     精确距离更严格）—— 必须照抄，否则复验放行的位姿 env 仍判碰撞。
+            #     精确距离更严格）—— 必须与 bridge 保持一致，否则复验放行的位姿
+            #     env 仍判碰撞。
             for i in range(circles.shape[0]):
                 cx, cy, cr = circles[i, 0], circles[i, 1], circles[i, 2]
                 r_eff = cr + m

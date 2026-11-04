@@ -3,7 +3,7 @@
 env 的分工是"env 下发归一化动作、桥把它变成物理量再推演"：
 `envs/chassis_env.py:1294` 只把 `act` 交给 `bridge.step(act)`，映射由桥负责。
 本仓自带的 `SimpleBridge` 一步做完；但外部模拟器（ir-sim、ROS gazebo、真车
-接口，以及主仓 `ros_bridge/numpy_bridge.py` 的 `NumpySimBridge`）只吃物理量。
+接口，以及旧桥的 `NumpySimBridge`）只吃物理量。
 直接挂上去，归一化动作会被当成物理量吃掉。
 
 `PhysicalCommandBridge` 补上缺的那一段：
@@ -146,7 +146,7 @@ class PhysicalCommandBridge(SensorProvider):
         """转发内层桥的可选传感器读数；内层不支持该能力时返回 `None`。
 
         传感器是**可选能力**（与 `set_dynamic_obstacles` 的"必须响亮报错"
-        正相反）：内层桥压根没有这个方法（主仓 NumpySimBridge / ir-sim
+        正相反）：内层桥压根没有这个方法（NumpySimBridge / ir-sim
         SimBridge 就是这样），或只继承了 `SensorProvider` 的非抽象默认实现，
         都视为"未启用可选传感器"，返回 `None` 而不是抛 `AttributeError` ——
         否则 env 侧 `getattr` 兜底（`envs/chassis_env.py:1735`）会被本类的

@@ -5,12 +5,11 @@ config/ 既是 package data（env.yaml / reward.yaml / curriculum.yaml）的家�
 也是 schema 的家 —— 配置只有这一个家，env 层不再另存一份。chassis_sim.config
 只做 re-export（见 __init__.py）。
 
-下面保留抽包时的迁移说明：从主仓 training/config.py 抽出 EnvConfig（原
-760-807 行）与 RewardConfig（原 810-938 行）两个 dataclass，并把原先散落在
-TrainingConfig.from_config_dir（原 976-1425 行）里的 env / reward 装配逻辑
-一并搬过来 —— 抽包后本库不再向 training/ 依赖。
+下面保留抽包时的迁移说明：EnvConfig 与 RewardConfig 两个 dataclass 原本与
+宿主的训练配置同住一个模块，env / reward 的装配逻辑也散落在宿主配置类的
+from_config_dir 里；抽包时一并搬进本文件 —— 本库因此不再依赖宿主的训练配置层。
 
-与主仓的三处有意差异：
+与原实现的三处有意差异：
 
 1. YAML 用 **pyyaml** 而不是 omegaconf（本包的 core 依赖里没有 omegaconf）。
    原实现只用到 OmegaConf 的三件事，逐条等价替换：
@@ -25,12 +24,12 @@ TrainingConfig.from_config_dir（原 976-1425 行）里的 env / reward 装配�
    按成员名查找这一行为也不涉及（本包不读枚举键）。
 2. 包里不发布 train.yaml（它是训练配置）。train.yaml 缺失时，原本从
    train.yaml 读的 EnvConfig 字段一律落回 dataclass 字段默认值；train.yaml
-   存在时（例如用户指着主仓的 config/ 目录）仍逐位沿用主仓读法。
-3. 默认配置通过 importlib.resources 定位，**不依赖 CWD** —— 这是主仓
-   training/config.py:976-1001 里 Path(config_dir) + open() 那个 bug 的修复。
+   存在时（例如用户指着宿主项目的 config/ 目录）仍逐位沿用同一读法。
+3. 默认配置通过 importlib.resources 定位，**不依赖 CWD** —— 这是对原实现里
+   Path(config_dir) + open() 那个 CWD 相关 bug 的修复。
 
 数值的唯一权威仍是 YAML；YAML 缺键时的兜底值一律取 dataclass 字段默认值
-（不写字面量），以免出现"第三套默认值"（主仓 P2-13 的教训）。
+（不写字面量），以免出现"第三套默认值"（P2-13 的教训）。
 
 ## YAML 快照（EnvConfig.to_yaml / EnvConfig.from_yaml）
 
@@ -82,7 +81,7 @@ class EnvConfig:
     # 要随机化必须显式打开。api.make() 把它当作 domain_rand 的 cfg 级来源
     # （kwargs > cfg > False），因此 env 侧不再有"隐式开噪"的第二条路径。
     domain_rand_enabled: bool = False
-    # ── 域随机化强度（主仓 2026-10-05 接线）──────────────────────────────
+    # ── 域随机化强度（2026-10-05 接线）──────────────────────────────────
     # 这三个值在 NumpySimBridge / SimBridge 的构造器里一直存在，但**所有**
     # create_bridge 调用点都只传 domain_rand(bool)，从没传过它们；
     # train.yaml 的 domain_rand.lidar_noise_std 等键此前也没有任何代码读取
@@ -99,7 +98,7 @@ class EnvConfig:
     # ⇒ 直接当奖励闸门 = 惩罚噪声。1 = 关闭（逐位回到旧行为）。
     # 只作用于奖励侧（闸门 + 倒车段偏航权重）与 info，**不改观测**（494 维）。
     gear_lag_votes: int = 3
-    # ── 每步诊断字段的生产开关（主仓 P2-22 接线，2026-10-23）─────────────
+    # ── 每步诊断字段的生产开关（P2-22 接线，2026-10-23）─────────────────
     # AckermannEnv 早就有 emit_reward_components 参数（默认 True），但**没有
     # 任何调用点传过它** ⇒ 生产永远拿默认值，"省内存"的旋钮一直是死键。
     # reward_components 实测 1711 B/条，训练路径零消费者；置 False 可省 ≈1.1 GB。
@@ -119,6 +118,18 @@ class EnvConfig:
     v_deadband: float = 0.0  # m/s，|v_cmd| 低于此值输出归零（0 = 关，仅 wheel 档）
     wheel_slip: float = 0.0  # 轮滑系数 ∈[0,1)，地速 = 轮速×(1−slip)（0 = 关，仅 wheel）
 
+    # ── 积分 / 碰撞精度旋钮（2026-11-05）─────────────────────────────────
+    # integration_substeps: 一个 dt 切成多少段积分。1 = 与加入本项前**逐位相同**
+    #   （单段、同一条语句、同 dt）；n>1 时每段 dt/n，段间归一 θ。闭式积分下
+    #   恒定 v/ω 对任意 dt 都已精确到浮点噪声 ⇒ 这个旋钮在数值上近乎无感，
+    #   它的价值是给 Euler 型通道留一个"一阶误差 ∝ 1/n"的杠杆，并让 CCD 的
+    #   扫掠段更短。**唯一在加载期校验取值范围的字段**（见 __post_init__）。
+    # ccd: 连续碰撞检测开关。False（默认）= 只判段末位姿，与旧实现逐位相同；
+    #   True = 每个积分段再按固定间距采样内部位姿做同一份精确判定 ⇒ 检出集合
+    #   是旧行为的超集（只多检出，绝不放过原先能检出的）。
+    integration_substeps: int = 1
+    ccd: bool = False
+
     # ── 行为参数（1.0.0 W1 收敛，2026-11-04）─────────────────────────────
     # 这些字段原先只住在 ChassisSimEnv.__init__ 的形参里（形参默认值即库默
     # 认），现在收进 EnvConfig：构造器形参默认一律 None，解析顺序统一为
@@ -134,6 +145,9 @@ class EnvConfig:
     sensors: tuple[Any, ...] | None = None
     obs_spec: Any | None = None
     scenario: str | None = None
+    # env 自己接的内建场景：调用方没给 scenario/reset options 时用它，且**必须**
+    # 能在纯 core（无 numba）下加载。None ⇒ 回到 2.x 的固定直线兜底。
+    default_scenario: str | None = "dense_static"
     max_steps: int = 1000
     path_lookahead: float = 20.0
     max_path_points: int = 30
@@ -168,6 +182,23 @@ class EnvConfig:
             self.sensors = tuple(self.sensors)
         if self.world_bounds is not None:
             self.world_bounds = tuple(float(x) for x in self.world_bounds)
+        # 两个例外：integration_substeps 决定 dt 的切分，0 会让子步 dt 变 inf、
+        # 负数会让位姿倒退，而 EnvConfig 是配置的**加载面** ⇒ 在这里就拒掉，
+        # 错误信息才带得出"期望 ≥1 的整数"（否则要等桥构造期才炸）。
+        if isinstance(self.integration_substeps, bool) or not isinstance(
+            self.integration_substeps, int
+        ):
+            raise ValueError(
+                f"integration_substeps 必须是 int，收到 {self.integration_substeps!r}"
+            )
+        if self.integration_substeps < 1:
+            raise ValueError(
+                f"integration_substeps 必须 >= 1，收到 {self.integration_substeps}"
+            )
+        # ccd 同属"打开就换行为"的旋钮：字符串 "false" 会被 bool() 当成 True，
+        # 静默反转语义比拒绝启动更糟，所以在这里要求真的是 bool。
+        if not isinstance(self.ccd, bool):
+            raise ValueError(f"ccd 必须是 bool，收到 {self.ccd!r}")
 
     def to_yaml(self, path: str | Path) -> Path:
         """写一份可重建的 YAML 快照（**不是** DSL，见模块 docstring）。
@@ -251,7 +282,7 @@ class EnvConfig:
 class RewardConfig:
     """All reward weights and numerical parameters (~25 fields).
 
-    0.1.1：删除 4 个主仓历史遗留的**死奖励参数** —— RewardCalculator 的签名与
+    0.1.1：删除 4 个历史遗留的**死奖励参数** —— RewardCalculator 的签名与
     构造体里的 kwargs.get 都不消费它们，传进来只会被 **kwargs 吞掉，env 侧因此
     在构造期打一条 [WARN][env]：alive_bonus / reverse_step_penalty /
     curvature_scale / heading_alpha。（同批告警的另 8 个键从来不在本 dataclass：
@@ -262,7 +293,7 @@ class RewardConfig:
     """
 
     # ⚠ 本字典必须与 config/reward.yaml 的 reward_weights **逐键逐值**一致
-    #   （主仓 tests/test_config_default_sync.py 锁住；改 YAML 就必须同步改这里）。
+    #   （改 YAML 就必须同步改这里；两者逐键逐值一致由测试锁住）。
     #   这份默认值只在"不经 from_config_dir 的构造"里生效（reward_cfg=None），
     #   而它以前长期是另一套值（drive 7.0 / cte 2.5 / obstacle 1.0、且缺
     #   steer_penalty / goal_proximity / heading_penalty_reverse）——
@@ -296,7 +327,7 @@ class RewardConfig:
     cte_delta: float = 0.5
     cte_dead_zone: float = 0.2
     # ⚠ 以下标量默认值必须与 config/reward.yaml 的 reward_params **逐位一致**
-    #   （主仓 tests/test_config_default_sync.py::TestRewardConfigDefaultsMatchYaml）。
+    #   （改 YAML 就必须同步改这里）。
     #   P2-13 (2026-10-23)：此前这里有 4 个字段是第二套值，与 YAML 分叉——
     #     goal_time_bonus 40 vs 0.0、step_penalty 0.0 vs -0.02、
     #     obstacle_range 1.5 vs 0.8、goal_bonus 200 vs 400。
@@ -389,7 +420,7 @@ def _get_nested(d: dict, *keys: str, default: Any = None) -> Any:
     """安全地从嵌套字典中提取值。
 
     逐层 .get；遇到非 dict 立刻返回 default；末值为 None 时也返回 default
-    （与主仓 training/config.py:1428-1436 逐位一致）。
+    （与原实现的取值口径一致）。
     """
     cur: Any = d
     for k in keys:
@@ -402,7 +433,7 @@ def _get_nested(d: dict, *keys: str, default: Any = None) -> Any:
 # ══════════════════════════════════════════════════════════════════════
 # 结构调整校验 —— 替代 OmegaConf.structured(schema) + merge + to_object
 # ══════════════════════════════════════════════════════════════════════
-# 原实现（主仓 training/config.py:600-618）用结构化 schema 把三件事拒在加载期：
+# 原实现用结构化 schema 把三件事拒在加载期：
 #   ① 未知键（"把 failure_dense_cap 拼错成 failure_dense_cp"曾静默丢弃）；
 #   ② 类型不匹配（标量写成 list、bool 写成字符串等）；
 #   ③ 缺省键由 schema 的默认值补全（本包用 dataclass 字段默认值兜底，等价）。
@@ -460,6 +491,8 @@ _TRAIN_SECTION_TYPES: dict[str, dict[str, str]] = {
         "steer_rate_max": "float",
         "gear_lag_votes": "int",
         "emit_reward_components": "bool",
+        "integration_substeps": "int",
+        "ccd": "bool",
     },
     "privileged": {"enabled": "bool", "n_bins": "int", "max_range": "float"},
     "domain_rand": {
@@ -575,7 +608,7 @@ def _validate_train_yaml(train_raw: Any, filename: str = "train.yaml") -> None:
     """只校验本包消费的段（见 _TRAIN_SECTION_TYPES 的注释）。
 
     **未知键在这里被忽略**（`allow_unknown=True`）：train.yaml 是**宿主项目**的
-    文件（主仓的 config/ 目录），本包只消费其中与 env 有关的一部分 —— 同一段里
+    文件（宿主项目的 config/ 目录），本包只消费其中与 env 有关的一部分 —— 同一段里
     还住着 display.sentinel、auto_curriculum.phase_a、network.actor_hidden 之类
     本包不读的键。因它们报错会让整个目录读不了，等于让宿主换不成 "Host 拥有
     train.yaml，本包只取自己要的那几项"。
@@ -600,7 +633,7 @@ def from_config_dir(config_dir: str | Path) -> tuple[EnvConfig, RewardConfig]:
 
     读法：
       · reward.yaml 与 env.yaml **必需**（缺失直接抛 FileNotFoundError，
-        与主仓同目录时的行为一致）；
+        与宿主项目同目录时的行为一致）；
       · train.yaml **存在才读** —— 包里不发布它；缺失时 env / privileged /
         domain_rand / display / auto_curriculum / path / network 各段一律落回
         EnvConfig 字段默认值，其余字段照常从 env.yaml / reward.yaml 装配。
@@ -625,7 +658,7 @@ def from_config_dir(config_dir: str | Path) -> tuple[EnvConfig, RewardConfig]:
     if train_raw:
         _validate_train_yaml(train_raw, "config/train.yaml")
     # env.yaml 不做结构校验：world/robot 段由 ir-sim 与桥接按 .get 消费，
-    # 还带 world.bounds 之类的可选键（主仓同样不校验它）。
+    # 还带 world.bounds 之类的可选键（与 env.yaml 一样不做校验）。
 
     return _build_env_config(train_raw, reward_raw, env_raw), _build_reward_config(
         reward_raw
@@ -633,7 +666,7 @@ def from_config_dir(config_dir: str | Path) -> tuple[EnvConfig, RewardConfig]:
 
 
 def _f(train_raw: dict, default: Any, *keys: str) -> Any:
-    """取第一个存在的点路径键，否则返回 default（主仓 _f 的等价实现）。"""
+    """取第一个存在的点路径键，否则返回 default（等价于原实现的 `_f`）。"""
     for key in keys:
         val = _get_nested(train_raw, *key.split("."), default=_MISSING)
         if val is not _MISSING:
@@ -652,7 +685,7 @@ _MISSING = _Missing()
 
 
 def _build_env_config(train_raw: dict, reward_raw: dict, env_raw: dict) -> EnvConfig:
-    """按主仓 TrainingConfig.from_config_dir 的取值顺序装配 EnvConfig。"""
+    """按同一套取值顺序装配 EnvConfig（env.yaml 段优先，缺失落回字段默认值）。"""
     # ── Env physics（train.yaml 的 env 段；缺失 ⇒ 字段默认值）──
     delta_max = float(_f(train_raw, 0.526, "env.delta_max"))
     kappa_max = float(_f(train_raw, 4.0, "env.kappa_max"))
@@ -668,6 +701,10 @@ def _build_env_config(train_raw: dict, reward_raw: dict, env_raw: dict) -> EnvCo
     steer_rate_max = float(_f(train_raw, 0.0, "env.steer_rate_max"))
     gear_lag_votes = int(_f(train_raw, 3, "env.gear_lag_votes"))
     emit_reward_components = bool(_f(train_raw, True, "env.emit_reward_components"))
+    # 积分子步数与 CCD（2026-11-05）。缺键 ⇒ EnvConfig 的库默认（1 / False）
+    # ⇒ 与加入这两项前逐位相同；本包不发布 train.yaml，故不动物理 YAML 文件。
+    integration_substeps = int(_f(train_raw, 1, "env.integration_substeps"))
+    ccd = bool(_f(train_raw, False, "env.ccd"))
 
     # ── Privileged ──
     privileged_enabled = bool(_f(train_raw, False, "privileged.enabled"))
@@ -692,7 +729,7 @@ def _build_env_config(train_raw: dict, reward_raw: dict, env_raw: dict) -> EnvCo
     # reward_params 会被当**未知键**拒绝。
     _EC = EnvConfig()  # 兜底值来源（dynamics 段的 level / 时间常数）
 
-    # ── env.yaml：世界步长 / 轮距 / LiDAR 量程（主仓 1308-1317）──
+    # ── env.yaml：世界步长 / 轮距 / LiDAR 量程 ──
     dt = float(env_raw.get("world", {}).get("step_time", 0.1))
     wheelbase = float(
         _get_nested(env_raw, "robot", "shape", "wheelbase", default=0.145)
@@ -704,7 +741,7 @@ def _build_env_config(train_raw: dict, reward_raw: dict, env_raw: dict) -> EnvCo
             break
 
     # ── env.yaml：robot.dynamics（动力学三级开关，2026-11-04）────────────
-    # 挂在 robot 段下而不是新增顶层键：顶层键必须保持 {world, robot}（与主仓一致，
+    # 挂在 robot 段下而不是新增顶层键：顶层键必须保持 {world, robot}（兼容约束，
     # 见 tests/test_envs_config.py 的 TestPackagedYaml）；env.yaml 不做结构校验，
     # 该段只被本函数按 .get 消费。
     _dyn_raw = env_raw.get("robot", {}).get("dynamics", {}) or {}
@@ -767,6 +804,8 @@ def _build_env_config(train_raw: dict, reward_raw: dict, env_raw: dict) -> EnvCo
         curriculum_enabled=curriculum_enabled,
         gear_lag_votes=gear_lag_votes,
         emit_reward_components=emit_reward_components,
+        integration_substeps=integration_substeps,
+        ccd=ccd,
         dynamics=dynamics,
         v_tau=v_tau,
         omega_tau=omega_tau,
@@ -776,7 +815,7 @@ def _build_env_config(train_raw: dict, reward_raw: dict, env_raw: dict) -> EnvCo
 
 
 def _build_reward_config(reward_raw: dict) -> RewardConfig:
-    """按主仓 TrainingConfig.from_config_dir 的取值顺序装配 RewardConfig。
+    """按 reward.yaml 的取值顺序装配 RewardConfig（缺键落回字段默认值）。
 
     数值的**唯一权威是 reward.yaml**；YAML 缺某键时的兜底值一律取 dataclass
     的字段默认值（而不是又一堆手写字面量）。
