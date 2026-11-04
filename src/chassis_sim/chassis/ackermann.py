@@ -107,6 +107,10 @@ class AckermannChassis(Chassis):
         """清零转向滞后状态（首帧 prev=0，与 numpy_bridge.py:228 一致）。"""
         self._prev_delta = 0.0
 
+    def steering_angle(self) -> float:
+        """当前前轮转角（弧度）：step() 更新后的 δ，即轮子此刻的真实朝向。"""
+        return float(self._prev_delta)
+
     def _limits(self) -> dict:
         # |ω| ≤ |v|·tan|δ| / L，在 v_max 与 delta_max 处取到上界（曲率模式下另有 κ_max 上限）
         return {

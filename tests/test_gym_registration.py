@@ -18,6 +18,12 @@ from chassis_sim.envs import ChassisSimEnv
 from chassis_sim.gym_registration import ENV_IDS, register_envs
 
 ENV_ITEMS = sorted(ENV_IDS.items())
+# 默认观测 = 最小集 odom+path+goal+act（act 段宽度随车型动作维）
+GYM_OBS_DIMS = {
+    "ChassisSim-Ackermann-v0": 128,
+    "ChassisSim-DiffDrive-v0": 128,
+    "ChassisSim-Mecanum-v0": 129,
+}
 N_VEC = 4
 VEC_STEPS = 100
 
@@ -34,6 +40,33 @@ def test_register_envs_is_idempotent():
     assert register_envs() == []
     for env_id in ENV_IDS:
         assert env_id in registry
+
+
+@pytest.mark.parametrize(("env_id", "chassis"), ENV_ITEMS)
+def test_make_env_default_obs_dim(env_id, chassis):
+    env = gym.make(env_id)
+    try:
+        assert env.observation_space.shape == (GYM_OBS_DIMS[env_id],)
+        assert env.observation_space.dtype == np.float32
+        obs, _ = env.reset(seed=0)
+        assert obs.shape == (GYM_OBS_DIMS[env_id],)
+    finally:
+        env.close()
+
+
+def test_make_env_forwards_obs_spec_kwarg():
+    """gymnasium 把 make() 的多余关键字原样传给构造器 ⇒ 对象参数直接可用。"""
+    from chassis_sim.envs import ObsLayout
+
+    env = gym.make(
+        "ChassisSim-Ackermann-v0",
+        obs_spec=ObsLayout(action_dim=2, max_path_points=30).as_spec(),
+    )
+    try:
+        assert env.observation_space.shape == (494,)
+        assert env.unwrapped.obs_spec_describe()["lidar"] == slice(0, 360)
+    finally:
+        env.close()
 
 
 @pytest.mark.parametrize(("env_id", "chassis"), ENV_ITEMS)

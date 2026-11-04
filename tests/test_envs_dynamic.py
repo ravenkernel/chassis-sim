@@ -12,10 +12,10 @@ import numpy as np
 import pytest
 
 from chassis_sim.bridges import SensorProvider
-from chassis_sim.envs import ChassisSimEnv
+from chassis_sim.envs import ChassisSimEnv, ObsLayout
 from chassis_sim.scenarios import load_scenario, scenario_to_reset_options
 
-#: 前 360 维是 LiDAR（ObsLayout 的第一段）
+#: 前 360 维是 LiDAR（ObsLayout 的第一段；默认观测已不含 LiDAR，见 _run）
 N_LIDAR = 360
 STEPS = 14
 
@@ -31,7 +31,13 @@ def _options(with_dynamic: bool) -> dict:
 
 def _run(with_dynamic: bool, steps: int = STEPS) -> tuple[np.ndarray, list[dict]]:
     """跑同一个开环动作（a0=0 ⇒ 直行，a1=1 ⇒ 1 m/s），返回末步 obs 与逐步 info。"""
-    env = ChassisSimEnv("ackermann", max_steps=steps)
+    env = ChassisSimEnv(
+        "ackermann",
+        max_steps=steps,
+        # 本用例要读前 360 维 LiDAR ⇒ 显式点名 v0.1.4 的 494 布局
+        # （0.2.0 的默认观测是最小集，不含 lidar 段）
+        obs_spec=ObsLayout(action_dim=2, max_path_points=30).as_spec(),
+    )
     try:
         obs, _ = env.reset(seed=0, options=_options(with_dynamic))
         infos: list[dict] = []

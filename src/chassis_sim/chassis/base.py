@@ -113,6 +113,10 @@ class Chassis(ABC):
         """(前, 后) 激光雷达安装位姿 (x, y, 朝向偏移)。"""
         return (self.FRONT_LIDAR, self.REAR_LIDAR)
 
+    def steering_angle(self) -> float:
+        """当前前轮转角（弧度）；转向轮恒与车身对齐的底盘返回 0.0。"""
+        return 0.0
+
     def describe(self) -> dict:
         """车型描述（键名是与控制器层的契约，**不许改名**）。"""
         space = self.action_space()

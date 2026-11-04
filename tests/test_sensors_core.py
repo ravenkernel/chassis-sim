@@ -1,313 +1,611 @@
-"""传感器层单元测试（纯 numpy）：IMU / 轮速计 / 参数化 LiDAR / 延迟 / 丢帧。
+"""`chassis_sim.sensors` 单元测试：spec 校验 / 几何 / 随机流隔离 / 退化模型。
 
-两个主题：
-1. **数值公式**：IMU 的 ax/ay、轮速计的左右轮差速、LiDAR 的角度几何 / 量化 /
-   延迟环形缓冲 / 丢帧语义，全部对**手算值**断言，不是拿实现对自己。
-2. **随机源隔离**（硬约束）：传感器的随机数只来自从 `sensor_seed` 派生的独立
-   Generator，模块级 `np.random` 序列一个数都不许动；且各路传感器互不移位。
+三条硬约束各有独立断言组：
+
+1. **随机流按 `(seed, name)` 派生**：跨进程稳定（不依赖 `hash()` 的加盐），
+   且增删任何一支传感器都不平移其它支的序列（这是 `spawn` 做不到的）。
+2. **几何外置**：套件只把车体系 (原点, 方位角, 量程) 交给注入的 `raycast`，
+   自己不碰世界坐标、不 import 桥。
+3. **处理顺序固定**：clip -> 噪声 -> clip -> 量化 -> float32 -> 延迟缓冲 -> 丢帧。
 """
 
 from __future__ import annotations
 
+import json
+import os
+import subprocess
+import sys
+
 import numpy as np
 import pytest
 
-from chassis_sim.bridges.sensors import (
-    Imu,
-    LidarParams,
-    ParametricLidar,
-    SensorConfig,
-    SensorSuite,
-    WheelOdometry,
-)
+from chassis_sim.sensors import Imu, Lidar, SensorSuite, WheelOdom, derive_rng
+
+_DT = 0.1
 
 
-def _rng(seed: int = 0) -> np.random.Generator:
-    return np.random.default_rng(seed)
+def _constant(value: float):
+    """返回一个恒定距离的 raycast（与角度/原点无关）。"""
+
+    def raycast(
+        origin_xy: tuple[float, float], angle_rad: float, max_range: float
+    ) -> float:
+        return float(value)
+
+    return raycast
+
+
+def _by_angle(offset: float = 1.0, gain: float = 0.37):
+    """返回一个距离随**车体系方位角**线性变化的 raycast。"""
+
+    def raycast(
+        origin_xy: tuple[float, float], angle_rad: float, max_range: float
+    ) -> float:
+        return float(offset + gain * angle_rad)
+
+    return raycast
+
+
+def _recording(log: list):
+    """返回一个把每次调用参数记进 `log` 的 raycast。"""
+
+    def raycast(
+        origin_xy: tuple[float, float], angle_rad: float, max_range: float
+    ) -> float:
+        log.append((tuple(origin_xy), float(angle_rad), float(max_range)))
+        return 1.0
+
+    return raycast
+
+
+def _run_steps(
+    suite: SensorSuite,
+    n: int,
+    *,
+    v: float = 1.0,
+    vy: float = 0.0,
+    omega: float = 0.3,
+    theta: float = 0.1,
+) -> list[dict]:
+    return [
+        suite.update(v=v, vy=vy, omega=omega, theta=theta, t=i * _DT) for i in range(n)
+    ]
 
 
 # ═════════════════════════════════════════════════════════════════════
-# 默认值 / 参数校验
+# 1. spec：默认值 / 不可变 / 参数校验
 # ═════════════════════════════════════════════════════════════════════
 
 
-def test_default_lidar_params_match_legacy_geometry() -> None:
-    """默认参数必须逐位等于历史 180 线雷达的常量（否则 obs 对拍会碎）。"""
-    p = LidarParams()
-    assert (p.n_rays, p.max_range, p.range_min) == (180, 10.0, 0.05)
-    assert p.fov == float(np.pi)
-    assert (p.noise_std, p.quant_step, p.latency_steps, p.dropout_prob) == (
-        0.0,
-        0.0,
-        0,
-        0.0,
-    )
-    assert p.side == "front"
-    # 端点包含：179 个间隔铺满 pi（与 get_scan 的 angle_increment 同式）
-    assert p.angle_increment == float(np.pi) / 179
-    assert p.angle_span == pytest.approx(float(np.pi), abs=0.0)
+def test_lidar_defaults_match_documentation() -> None:
+    spec = Lidar("scan")
+    assert spec.mount == (0.0, 0.0, 0.0)
+    assert spec.fov == pytest.approx(np.pi)
+    assert spec.n_rays == 180
+    assert spec.max_range == pytest.approx(10.0)
+    assert spec.range_min == pytest.approx(0.05)
+    assert spec.noise_std == 0.0
+    assert spec.quant_step == 0.0
+    assert spec.latency_steps == 0
+    assert spec.dropout_prob == 0.0
 
 
-def test_sensor_config_defaults_are_all_off() -> None:
-    cfg = SensorConfig()
-    assert cfg.lidar is None
-    assert cfg.imu is False and cfg.wheel is False
-    assert cfg.enabled is False
+def test_imu_and_wheel_defaults() -> None:
+    assert Imu("imu").noise_std == 0.0
+    wheel = WheelOdom("wheel")
+    assert wheel.track_width is None
+    assert wheel.noise_std == 0.0
+
+
+def test_specs_are_frozen() -> None:
+    from dataclasses import FrozenInstanceError
+
+    spec = Lidar("scan")
+    with pytest.raises(FrozenInstanceError):
+        spec.n_rays = 90  # type: ignore[misc]
 
 
 @pytest.mark.parametrize(
-    "kwargs",
+    "factory",
     [
-        {"n_rays": 1},
-        {"fov": 0.0},
-        {"fov": float("nan")},
-        {"max_range": 0.0},
-        {"range_min": 0.0},
-        {"range_min": 11.0},
-        {"noise_std": -0.1},
-        {"quant_step": -0.1},
-        {"latency_steps": -1},
-        {"dropout_prob": -0.1},
-        {"dropout_prob": 1.1},
-        {"side": "left"},
+        pytest.param(lambda: Lidar(""), id="empty-name"),
+        pytest.param(lambda: Lidar("x", n_rays=1), id="n_rays<2"),
+        pytest.param(lambda: Lidar("x", fov=0.0), id="fov=0"),
+        pytest.param(lambda: Lidar("x", fov=float("nan")), id="fov=nan"),
+        pytest.param(lambda: Lidar("x", max_range=-1.0), id="max_range<0"),
+        pytest.param(lambda: Lidar("x", range_min=0.0), id="range_min=0"),
+        pytest.param(
+            lambda: Lidar("x", max_range=1.0, range_min=2.0), id="range_min>max"
+        ),
+        pytest.param(lambda: Lidar("x", noise_std=-0.1), id="noise<0"),
+        pytest.param(lambda: Lidar("x", quant_step=-0.1), id="quant<0"),
+        pytest.param(lambda: Lidar("x", latency_steps=-1), id="latency<0"),
+        pytest.param(lambda: Lidar("x", dropout_prob=1.5), id="dropout>1"),
+        pytest.param(lambda: Lidar("x", dropout_prob=-0.1), id="dropout<0"),
+        pytest.param(
+            lambda: Lidar("x", mount=(0.0, float("inf"), 0.0)), id="mount-inf"
+        ),
+        pytest.param(lambda: Lidar("x", mount=(1.0, 2.0)), id="mount-arity"),
+        pytest.param(lambda: Imu("x", noise_std=-1.0), id="imu-noise<0"),
+        pytest.param(lambda: WheelOdom("x", track_width=0.0), id="track_width=0"),
+        pytest.param(lambda: WheelOdom("x", track_width=-0.5), id="track_width<0"),
     ],
 )
-def test_lidar_params_reject_invalid(kwargs: dict) -> None:
+def test_invalid_specs_raise_value_error(factory) -> None:
     with pytest.raises(ValueError):
-        LidarParams(**kwargs)
+        factory()
 
 
-def test_sensor_config_rejects_invalid() -> None:
-    with pytest.raises(ValueError):
-        SensorConfig(imu_noise_std=-1.0)
-    with pytest.raises(ValueError):
-        SensorConfig(wheel_noise_std=-1.0)
-    with pytest.raises(ValueError):
-        SensorConfig(track_width=0.0)
-    with pytest.raises(ValueError):
-        SensorConfig(sensor_seed=-1)
+def test_lidar_geometry_properties() -> None:
+    spec = Lidar("scan", mount=(0.1, -0.2, 0.4), fov=np.pi / 2.0, n_rays=90)
+    assert spec.angle_increment == pytest.approx((np.pi / 2.0) / 89)
+    # angle_min 直接反映 mount 的 yaw：yaw - fov/2
+    assert spec.angle_min == pytest.approx(0.4 - np.pi / 4.0)
+    assert spec.angle_span == pytest.approx((89) * spec.angle_increment)
+    assert spec.angle_span == pytest.approx(np.pi / 2.0)
 
 
 # ═════════════════════════════════════════════════════════════════════
-# 参数化 LiDAR：延迟 / 丢帧 / 量化 / 噪声
+# 2. 装配：空列表 / 重名 / 类型 / 必需依赖
 # ═════════════════════════════════════════════════════════════════════
 
 
-def test_latency_ring_buffer_delivers_k_minus_latency() -> None:
-    """latency=3：第 k 步交付第 k-3 步采集的帧，前 3 步是预热期（None）。"""
-    lidar = ParametricLidar(LidarParams(n_rays=4, latency_steps=3), _rng(0))
-    delivered: list = []
-    frame_ts: list = []
-    for k in range(1, 8):
-        raw = np.full(4, float(k))
-        scan, meta = lidar.update(raw, t=0.1 * k)
-        delivered.append(None if scan is None else float(scan[0]))
-        frame_ts.append(meta["frame_t"])
-        assert meta["t"] == pytest.approx(0.1 * k)
-        assert meta["valid"] is (scan is not None)
-    assert delivered == [None, None, None, 1.0, 2.0, 3.0, 4.0]
-    expected_ts = [None, None, None, 0.1, 0.2, 0.3, 0.4]
-    for got, want in zip(frame_ts, expected_ts):
-        if want is None:
-            assert got is None
-        else:
-            assert got == pytest.approx(want)
+def test_empty_spec_list_yields_no_readings() -> None:
+    suite = SensorSuite([], seed=0)
+    assert suite.names == ()
+    assert len(suite) == 0
+    assert suite.track_width is None
+    assert suite.update(v=1.0, vy=0.0, omega=0.0, theta=0.0, t=0.0) == {}
+
+
+def test_reading_keys_follow_spec_order() -> None:
+    specs = [
+        WheelOdom("wheel", track_width=0.3),
+        Lidar("scan"),
+        Imu("imu"),
+    ]
+    suite = SensorSuite(specs, raycast=_constant(1.0))
+    reading = suite.update(v=1.0, vy=0.0, omega=0.0, theta=0.0, t=0.0)
+    assert list(reading) == ["wheel", "scan", "imu"]
+    assert suite.names == ("wheel", "scan", "imu")
+    assert suite.specs == tuple(specs)
+    assert set(reading["scan"]) == {"scan", "scan_meta"}
+    assert set(reading["imu"]) == {"ax", "ay", "yaw_rate", "yaw", "t"}
+    assert set(reading["wheel"]) == {"v_left", "v_right", "v", "t"}
+
+
+def test_duplicate_name_is_rejected() -> None:
+    with pytest.raises(ValueError, match="重复"):
+        SensorSuite([Imu("same"), Imu("same")])
+
+
+def test_lidar_requires_raycast() -> None:
+    with pytest.raises(ValueError, match="raycast"):
+        SensorSuite([Lidar("scan")])
+
+
+def test_wheel_requires_track_width() -> None:
+    with pytest.raises(ValueError, match="track_width"):
+        SensorSuite([WheelOdom("wheel")])
+    # 给缺省值即可
+    suite = SensorSuite([WheelOdom("wheel")], default_track_width=0.42)
+    assert suite.track_width == pytest.approx(0.42)
+
+
+def test_unknown_spec_type_is_rejected() -> None:
+    with pytest.raises(TypeError):
+        SensorSuite([object()])  # type: ignore[list-item]
+
+
+def test_negative_seed_is_rejected() -> None:
+    with pytest.raises(ValueError):
+        SensorSuite([], seed=-1)
+
+
+# ═════════════════════════════════════════════════════════════════════
+# 3. 几何外置：raycast 收到的就是车体系 (原点, 方位角, 量程)
+# ═════════════════════════════════════════════════════════════════════
+
+
+def test_raycast_receives_body_frame_origin_and_bearings() -> None:
+    log: list = []
+    spec = Lidar(
+        "scan", mount=(0.3, -0.2, 0.4), fov=np.pi / 2.0, n_rays=3, max_range=5.0
+    )
+    suite = SensorSuite([spec], raycast=_recording(log))
+    suite.update(v=1.0, vy=0.0, omega=0.0, theta=0.7, t=0.0)
+
+    assert len(log) == 3
+    for origin_xy, _angle, max_range in log:
+        # 原点恒为 mount 的 (x, y)：套件不知道、也不关心车的世界位姿
+        assert origin_xy == pytest.approx((0.3, -0.2))
+        assert max_range == pytest.approx(5.0)
+    bearings = np.array([entry[1] for entry in log])
+    # 方位角 = mount.yaw - fov/2 + i * fov/(n_rays-1)，与底盘停在哪里无关
+    assert bearings == pytest.approx([0.4 - np.pi / 4.0, 0.4, 0.4 + np.pi / 4.0])
+
+
+def test_sensors_package_does_not_import_bridges() -> None:
+    code = (
+        "import sys, chassis_sim.sensors\n"
+        "bad = [m for m in sys.modules if m.startswith('chassis_sim.bridges')]\n"
+        "print(bad)\n"
+        "assert not bad, bad\n"
+    )
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    out = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "[]"
+
+
+# ═════════════════════════════════════════════════════════════════════
+# 4. LiDAR：读数结构与退化模型
+# ═════════════════════════════════════════════════════════════════════
+
+
+def test_scan_is_float32_with_consistent_meta() -> None:
+    spec = Lidar(
+        "scan", mount=(0.1, 0.2, 0.3), fov=np.pi / 3.0, n_rays=45, max_range=8.0
+    )
+    suite = SensorSuite([spec], raycast=_constant(2.0))
+    reading = suite.update(v=0.0, vy=0.0, omega=0.0, theta=0.0, t=0.0)
+
+    scan = reading["scan"]
+    assert scan["scan"].dtype == np.float32
+    assert scan["scan"].shape == (45,)
+    meta = scan["scan_meta"]
+    assert meta["name"] == "scan"
+    assert meta["mount"] == (0.1, 0.2, 0.3)
+    assert meta["n_rays"] == 45
+    assert meta["fov"] == pytest.approx(np.pi / 3.0)
+    assert meta["angle_min"] == pytest.approx(0.3 - np.pi / 6.0)
+    assert meta["angle_max"] == pytest.approx(0.3 + np.pi / 6.0)
+    assert meta["angle_increment"] == pytest.approx((np.pi / 3.0) / 44.0)
+    assert meta["range_min"] == pytest.approx(0.05)
+    assert meta["range_max"] == pytest.approx(8.0)
+    assert meta["t"] == pytest.approx(0.0)
+    assert meta["frame_t"] == pytest.approx(0.0)
+    assert meta["valid"] is True
+    assert meta["dropped"] is False
+
+
+def test_two_mounts_produce_different_ranges() -> None:
+    # 距离随方位角变化 ⇒ 两个 mount 的读数必然不同
+    suite = SensorSuite(
+        [
+            Lidar("left", mount=(0.0, 0.3, 0.5), n_rays=8, fov=np.pi / 2.0),
+            Lidar("right", mount=(0.0, -0.3, -0.5), n_rays=8, fov=np.pi / 2.0),
+        ],
+        raycast=_by_angle(),
+    )
+    reading = suite.update(v=0.0, vy=0.0, omega=0.0, theta=0.0, t=0.0)
+    assert not np.array_equal(reading["left"]["scan"], reading["right"]["scan"])
+    assert reading["left"]["scan_meta"]["angle_min"] == pytest.approx(0.5 - np.pi / 4.0)
+    assert reading["right"]["scan_meta"]["angle_min"] == pytest.approx(
+        -0.5 - np.pi / 4.0
+    )
+
+
+def test_latency_two_steps() -> None:
+    spec = Lidar("scan", n_rays=4, latency_steps=2)
+    suite = SensorSuite([spec], raycast=_constant(1.0))
+    readings = _run_steps(suite, 5)
+
+    # 前两步：缓冲未填满 ⇒ 无有效帧
+    for step in (0, 1):
+        assert readings[step]["scan"]["scan"] is None
+        assert readings[step]["scan"]["scan_meta"]["valid"] is False
+        assert readings[step]["scan"]["scan_meta"]["frame_t"] is None
+        assert readings[step]["scan"]["scan_meta"]["dropped"] is False
+    # 第三步起：交付第 k-2 步采集的帧，时戳同步回退两拍
+    for step in (2, 3, 4):
+        meta = readings[step]["scan"]["scan_meta"]
+        assert readings[step]["scan"]["scan"] is not None
+        assert meta["t"] == pytest.approx(step * _DT)
+        assert meta["frame_t"] == pytest.approx((step - 2) * _DT)
+        assert meta["valid"] is True
 
 
 def test_zero_latency_delivers_current_frame() -> None:
-    lidar = ParametricLidar(LidarParams(n_rays=3), _rng(0))
-    scan, meta = lidar.update(np.array([1.0, 2.0, 3.0]), t=0.5)
-    assert scan is not None
-    assert np.array_equal(scan, np.array([1.0, 2.0, 3.0], dtype=np.float32))
-    assert meta["frame_t"] == pytest.approx(0.5)
+    suite = SensorSuite([Lidar("scan", n_rays=4)], raycast=_constant(1.0))
+    for step, reading in enumerate(_run_steps(suite, 4)):
+        meta = reading["scan"]["scan_meta"]
+        assert meta["t"] == pytest.approx(step * _DT)
+        assert meta["frame_t"] == pytest.approx(step * _DT)
 
 
-def test_dropout_one_drops_every_frame_without_crashing() -> None:
-    lidar = ParametricLidar(LidarParams(n_rays=8, dropout_prob=1.0), _rng(1))
-    for k in range(10):
-        scan, meta = lidar.update(np.linspace(0.5, 8.0, 8), t=0.1 * k)
-        assert scan is None
-        assert meta["valid"] is False
-        assert meta["dropped"] is True
-        assert meta["frame_t"] is None
+def test_dropout_one_drops_every_frame() -> None:
+    suite = SensorSuite(
+        [Lidar("scan", n_rays=4, dropout_prob=1.0)], raycast=_constant(1.0), seed=5
+    )
+    readings = _run_steps(suite, 6)
+    assert [r["scan"]["scan"] for r in readings] == [None] * 6
+    for reading in readings:
+        assert reading["scan"]["scan_meta"]["dropped"] is True
+        assert reading["scan"]["scan_meta"]["valid"] is False
 
 
-def test_quantization_snaps_to_step_multiples() -> None:
-    lidar = ParametricLidar(LidarParams(n_rays=3, quant_step=0.1), _rng(0))
-    scan, _ = lidar.update(np.array([1.24, 1.26, 2.04]), t=0.0)
-    assert scan is not None
-    assert np.allclose(scan, np.array([1.2, 1.3, 2.0]), atol=1e-6)
-    # 每个读数都是步长的整数倍（float32 下用 ULP 级容差）
-    q = scan.astype(np.float64) / 0.1
-    assert np.allclose(q, np.round(q), atol=1e-6)
+def test_dropout_zero_drops_nothing() -> None:
+    suite = SensorSuite(
+        [Lidar("scan", n_rays=4, dropout_prob=0.0)], raycast=_constant(1.0), seed=5
+    )
+    readings = _run_steps(suite, 6)
+    for reading in readings:
+        assert reading["scan"]["scan"] is not None
+        assert reading["scan"]["scan_meta"]["dropped"] is False
 
 
-def test_noise_is_nonzero_and_seed_reproducible() -> None:
-    raw = np.full(180, 2.0)
-    a = ParametricLidar(LidarParams(noise_std=0.05), _rng(7))
-    b = ParametricLidar(LidarParams(noise_std=0.05), _rng(7))
-    c = ParametricLidar(LidarParams(noise_std=0.05), _rng(8))
-    sa, _ = a.update(raw, t=0.0)
-    sb, _ = b.update(raw, t=0.0)
-    sc, _ = c.update(raw, t=0.0)
-    assert sa is not None and sb is not None and sc is not None
-    assert float(np.std(sa.astype(np.float64) - 2.0)) > 0.0
-    assert np.array_equal(sa, sb), "同 seed 必须逐位复现"
-    assert not np.array_equal(sa, sc), "换 seed 必须变"
+def test_partial_dropout_is_reproducible_for_a_fixed_seed() -> None:
+    def dropped(seed: int) -> list[bool]:
+        suite = SensorSuite(
+            [Lidar("scan", n_rays=4, dropout_prob=0.4)],
+            raycast=_constant(1.0),
+            seed=seed,
+        )
+        return [r["scan"]["scan"] is None for r in _run_steps(suite, 20)]
+
+    first = dropped(11)
+    assert first == dropped(11)
+    assert any(first) and not all(first)
 
 
-def test_scan_meta_geometry_matches_params() -> None:
-    p = LidarParams(n_rays=90, fov=float(np.pi) / 2.0)
-    lidar = ParametricLidar(p, _rng(0), mount_yaw=float(np.pi))
-    _, meta = lidar.update(np.full(90, 1.0), t=0.0)
-    assert meta["angle_increment"] == pytest.approx((np.pi / 2.0) / 89)
-    assert meta["angle_min"] == pytest.approx(np.pi - np.pi / 4.0)
-    assert meta["angle_max"] == pytest.approx(np.pi + np.pi / 4.0)
-    assert meta["n_rays"] == 90 and meta["side"] == "front"
-    assert np.isclose(
-        meta["angle_max"] - meta["angle_min"], 89 * meta["angle_increment"]
+# ═════════════════════════════════════════════════════════════════════
+# 5. 处理顺序：clip -> 噪声 -> clip -> 量化 -> float32
+# ═════════════════════════════════════════════════════════════════════
+
+
+@pytest.mark.parametrize(("raw", "expected"), [(1.24, 1.2), (1.26, 1.3), (2.04, 2.0)])
+def test_quantization_rounds_to_step(raw: float, expected: float) -> None:
+    suite = SensorSuite(
+        [Lidar("scan", n_rays=4, quant_step=0.1)], raycast=_constant(raw)
+    )
+    scan = suite.update(v=0.0, vy=0.0, omega=0.0, theta=0.0, t=0.0)["scan"]["scan"]
+    assert scan == pytest.approx(expected, abs=1e-6)
+
+
+def test_quantized_readings_are_multiples_of_the_step() -> None:
+    step = 0.1
+    suite = SensorSuite(
+        [Lidar("scan", n_rays=64, quant_step=step)], raycast=_by_angle(offset=3.0)
+    )
+    scan = suite.update(v=0.0, vy=0.0, omega=0.0, theta=0.0, t=0.0)["scan"]["scan"]
+    quantized = np.round(scan.astype(np.float64) / step) * step
+    assert np.allclose(scan, quantized, atol=1e-5)
+    # 读数确实跨了多个台阶（否则"是步长整数倍"可以平凡成立）
+    assert len(np.unique(np.round(scan / step))) > 5
+
+
+def test_noise_is_reproducible_and_clipped() -> None:
+    def run(seed: int) -> np.ndarray:
+        suite = SensorSuite(
+            [Lidar("scan", n_rays=32, noise_std=0.2, max_range=4.0)],
+            raycast=_constant(4.0),
+            seed=seed,
+        )
+        return suite.update(v=0.0, vy=0.0, omega=0.0, theta=0.0, t=0.0)["scan"]["scan"]
+
+    scan = run(3)
+    assert np.array_equal(scan, run(3))
+    assert not np.array_equal(scan, run(4))
+    # 上限侧在加噪后被重新 clip 回 max_range
+    assert scan.max() <= 4.0 + 1e-6
+    assert scan.min() >= 0.05 - 1e-6
+
+
+def test_noise_and_quantization_keep_the_processing_order() -> None:
+    """量化必须在加噪之后：两步都开时读数仍是步长整数倍。"""
+    suite = SensorSuite(
+        [Lidar("scan", n_rays=32, noise_std=0.05, quant_step=0.1)],
+        raycast=_by_angle(2.0),
+    )
+    scan = suite.update(v=0.0, vy=0.0, omega=0.0, theta=0.0, t=0.0)["scan"]["scan"]
+    quantized = np.round(scan.astype(np.float64) / 0.1) * 0.1
+    assert np.allclose(scan, quantized, atol=1e-5)
+
+
+# ═════════════════════════════════════════════════════════════════════
+# 6. 随机流：按 (seed, name) 派生、跨进程稳定、增删无关
+# ═════════════════════════════════════════════════════════════════════
+
+
+def test_derive_rng_depends_on_seed_and_name_only() -> None:
+    assert np.array_equal(
+        derive_rng(7, "scan").random(4), derive_rng(7, "scan").random(4)
+    )
+    assert not np.array_equal(
+        derive_rng(7, "scan").random(4), derive_rng(7, "imu").random(4)
+    )
+    assert not np.array_equal(
+        derive_rng(7, "scan").random(4), derive_rng(8, "scan").random(4)
     )
 
 
-def test_update_rejects_wrong_ray_count() -> None:
-    lidar = ParametricLidar(LidarParams(n_rays=8), _rng(0))
-    with pytest.raises(ValueError):
-        lidar.update(np.zeros(7), t=0.0)
+def test_derive_rng_is_stable_across_processes() -> None:
+    code = (
+        "import json\n"
+        "from chassis_sim.sensors import derive_rng\n"
+        "print(json.dumps(derive_rng(7, 'scan').normal(size=3).tolist()))\n"
+    )
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    out = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    assert out.returncode == 0, out.stderr
+    remote = np.array(json.loads(out.stdout.strip()))
+    assert np.array_equal(remote, derive_rng(7, "scan").normal(size=3))
 
 
-# ═════════════════════════════════════════════════════════════════════
-# IMU / 轮速计：手算值
-# ═════════════════════════════════════════════════════════════════════
+def test_adding_a_sensor_does_not_shift_other_streams() -> None:
+    """硬要求：加第三支（even 带噪声 + 丢帧）后，前两支的读数逐位不变。"""
 
+    def base() -> list:
+        return [
+            Lidar("scan", n_rays=16, noise_std=0.05, dropout_prob=0.3),
+            Imu("imu", noise_std=0.01),
+            WheelOdom("wheel", track_width=0.4, noise_std=0.02),
+        ]
 
-def test_imu_formulas_and_first_step() -> None:
-    imu = Imu(dt=0.1, rng=_rng(0))
-    first = imu.update(v=0.5, vy=0.0, omega=0.2, theta=0.1, t=0.1)
-    assert first["ax"] == 0.0, "首步没有速度历史 ⇒ 纵向加速度为 0"
-    assert first["ay"] == pytest.approx(0.5 * 0.2)
-    assert first["yaw_rate"] == pytest.approx(0.2)
-    assert first["yaw"] == pytest.approx(0.1)
-    assert first["t"] == pytest.approx(0.1)
+    extra = [
+        Lidar("extra", n_rays=8, noise_std=0.7, dropout_prob=0.5),
+        WheelOdom("extra_wheel", track_width=0.9, noise_std=0.3),
+    ]
+    short = SensorSuite(base(), seed=21, raycast=_by_angle(1.5))
+    long = SensorSuite(base() + extra, seed=21, raycast=_by_angle(1.5))
 
-    second = imu.update(v=0.8, vy=0.0, omega=-0.1, theta=0.3, t=0.2)
-    assert second["ax"] == pytest.approx((0.8 - 0.5) / 0.1)
-    assert second["ay"] == pytest.approx(0.8 * -0.1)
-    assert second["yaw_rate"] == pytest.approx(-0.1)
-
-
-def test_imu_lateral_term_uses_vy_difference_for_mecanum() -> None:
-    imu = Imu(dt=0.1, rng=_rng(0))
-    imu.update(v=0.5, vy=0.0, omega=0.0, theta=0.0, t=0.1)
-    out = imu.update(v=0.5, vy=0.25, omega=0.0, theta=0.0, t=0.2)
-    assert out["ay"] == pytest.approx((0.25 - 0.0) / 0.1)
-
-
-def test_imu_reset_clears_velocity_history() -> None:
-    imu = Imu(dt=0.1, rng=_rng(0))
-    imu.update(v=1.0, vy=0.0, omega=0.0, theta=0.0, t=0.1)
-    imu.reset()
-    out = imu.update(v=0.0, vy=0.0, omega=0.0, theta=0.0, t=0.1)
-    assert out["ax"] == 0.0, "reset 后首步不能再拿上一回合末速度做差分"
-
-
-def test_wheel_odometry_differential_formula() -> None:
-    wheel = WheelOdometry(rng=_rng(0), track_width=0.2)
-    out = wheel.update(v=1.0, omega=0.5, t=0.3)
-    assert out["v_left"] == pytest.approx(1.0 - 0.5 * 0.2 / 2.0)
-    assert out["v_right"] == pytest.approx(1.0 + 0.5 * 0.2 / 2.0)
-    assert out["v"] == pytest.approx(1.0)
-    assert out["t"] == pytest.approx(0.3)
-
-
-def test_wheel_noise_nonzero_and_midpoint_consistency() -> None:
-    wheel = WheelOdometry(rng=_rng(3), track_width=0.2, noise_std=0.01)
-    outs = [wheel.update(v=0.8, omega=0.0, t=0.1 * k) for k in range(1, 21)]
-    diffs = [o["v_left"] - 0.8 for o in outs]
-    assert float(np.std(diffs)) > 0.0
-    assert all(o["v"] == pytest.approx(0.5 * (o["v_left"] + o["v_right"])) for o in outs)
-
-
-# ═════════════════════════════════════════════════════════════════════
-# 随机源隔离
-# ═════════════════════════════════════════════════════════════════════
+    for step in range(10):
+        kwargs = {"v": 1.0, "vy": 0.1, "omega": 0.3, "theta": 0.2, "t": step * _DT}
+        a = short.update(**kwargs)
+        b = long.update(**kwargs)
+        assert (a["scan"]["scan"] is None) == (b["scan"]["scan"] is None)
+        assert a["scan"]["scan_meta"] == b["scan"]["scan_meta"]
+        if a["scan"]["scan"] is not None:
+            assert np.array_equal(a["scan"]["scan"], b["scan"]["scan"])
+        assert a["imu"] == b["imu"]
+        assert a["wheel"] == b["wheel"]
 
 
 def test_sensors_never_touch_global_np_random() -> None:
-    """正反证据：跑一遍传感器后，全局 np.random 的下一个数与不跑时完全相同。"""
     np.random.seed(12345)
-    expected = np.random.random(5)
-
-    np.random.seed(12345)
-    cfg = SensorConfig(
-        lidar=LidarParams(n_rays=64, noise_std=0.05, quant_step=0.002, dropout_prob=0.3),
-        imu=True,
-        wheel=True,
-        imu_noise_std=0.02,
-        wheel_noise_std=0.02,
-        sensor_seed=99,
-    )
+    before = np.random.get_state()
     suite = SensorSuite(
-        cfg,
-        dt=0.1,
-        fallback_track_width=0.2,
-        lidar_mounts=((0.145, 0.0, 0.0), (-0.155, 0.0, float(np.pi))),
+        [
+            Lidar("scan", n_rays=8, noise_std=0.1, dropout_prob=0.5),
+            Imu("imu", noise_std=0.1),
+            WheelOdom("wheel", track_width=0.3, noise_std=0.1),
+        ],
+        seed=5,
+        raycast=_by_angle(),
     )
-    for k in range(20):
-        suite.update(
-            v=0.5,
-            vy=0.0,
-            omega=0.1,
-            theta=0.0,
-            t=0.1 * k,
-            raw_scan=np.linspace(0.5, 9.0, 64),
+    _run_steps(suite, 5)
+    after = np.random.get_state()
+
+    def same_state(a, b) -> bool:
+        return a[0] == b[0] and np.array_equal(a[1], b[1]) and a[2:] == b[2:]
+
+    assert same_state(before, after)
+    # 反向对照：证明上面的比较不是恒真
+    np.random.normal()
+    assert not same_state(before, np.random.get_state())
+
+
+# ═════════════════════════════════════════════════════════════════════
+# 7. IMU / 轮速计模型
+# ═════════════════════════════════════════════════════════════════════
+
+
+def test_imu_first_step_has_zero_acceleration() -> None:
+    suite = SensorSuite([Imu("imu")])
+    reading = suite.update(v=2.0, vy=0.3, omega=0.5, theta=0.4, t=0.0)["imu"]
+    assert reading["ax"] == pytest.approx(0.0)
+    assert reading["ay"] == pytest.approx(2.0 * 0.5)  # 向心项；无历史 ⇒ 无差分项
+    assert reading["yaw_rate"] == pytest.approx(0.5)
+    assert reading["yaw"] == pytest.approx(0.4)
+    assert reading["t"] == pytest.approx(0.0)
+
+
+def test_imu_differences_from_previous_sample() -> None:
+    suite = SensorSuite([Imu("imu")])
+    suite.update(v=0.0, vy=0.0, omega=0.0, theta=0.0, t=0.0)
+    reading = suite.update(v=1.0, vy=0.2, omega=0.5, theta=0.05, t=0.1)["imu"]
+    assert reading["ax"] == pytest.approx(1.0 / 0.1)
+    assert reading["ay"] == pytest.approx(1.0 * 0.5 + 0.2 / 0.1)
+    assert reading["yaw"] == pytest.approx(0.05)
+
+
+def test_imu_rejects_non_increasing_time() -> None:
+    suite = SensorSuite([Imu("imu")])
+    suite.update(v=0.0, vy=0.0, omega=0.0, theta=0.0, t=0.1)
+    with pytest.raises(ValueError, match="严格递增"):
+        suite.update(v=0.0, vy=0.0, omega=0.0, theta=0.0, t=0.1)
+
+
+def test_imu_noise_is_reproducible() -> None:
+    def run(seed: int) -> dict:
+        suite = SensorSuite([Imu("imu", noise_std=0.1)], seed=seed)
+        return suite.update(v=1.0, vy=0.0, omega=0.2, theta=0.0, t=0.0)["imu"]
+
+    assert run(1) == run(1)
+    assert run(1) != run(2)
+
+
+def test_wheel_odometry_differential_formula() -> None:
+    suite = SensorSuite([WheelOdom("wheel", track_width=0.5)])
+    reading = suite.update(v=1.0, vy=0.0, omega=0.4, theta=0.0, t=0.0)["wheel"]
+    assert reading["v_left"] == pytest.approx(1.0 - 0.4 * 0.25)
+    assert reading["v_right"] == pytest.approx(1.0 + 0.4 * 0.25)
+    assert reading["v"] == pytest.approx(1.0)
+    assert reading["t"] == pytest.approx(0.0)
+
+
+def test_wheel_explicit_track_width_wins_over_default() -> None:
+    suite = SensorSuite([WheelOdom("wheel", track_width=0.8)], default_track_width=0.5)
+    assert suite.track_width == pytest.approx(0.8)
+    reading = suite.update(v=0.0, vy=0.0, omega=1.0, theta=0.0, t=0.0)["wheel"]
+    assert reading["v_left"] == pytest.approx(-0.4)
+    assert reading["v_right"] == pytest.approx(0.4)
+
+
+def test_wheel_noise_is_reproducible() -> None:
+    def run(seed: int) -> dict:
+        suite = SensorSuite(
+            [WheelOdom("wheel", track_width=0.3, noise_std=0.05)], seed=seed
         )
-    actual = np.random.random(5)
-    assert np.array_equal(expected, actual), "传感器消耗了全局 np.random 序列"
+        return suite.update(v=1.0, vy=0.0, omega=0.0, theta=0.0, t=0.0)["wheel"]
+
+    assert run(9) == run(9)
+    assert run(9) != run(10)
 
 
-def test_lidar_stream_independent_of_other_sensors() -> None:
-    """开/关 IMU 与轮速计不得平移 LiDAR 的随机流（SeedSequence.spawn 分路）。"""
-    mounts = ((0.145, 0.0, 0.0), (-0.155, 0.0, float(np.pi)))
-    only_lidar = SensorSuite(
-        SensorConfig(lidar=LidarParams(n_rays=32, noise_std=0.05), sensor_seed=5),
-        dt=0.1,
-        fallback_track_width=0.2,
-        lidar_mounts=mounts,
-    )
-    all_on = SensorSuite(
-        SensorConfig(
-            lidar=LidarParams(n_rays=32, noise_std=0.05),
-            imu=True,
-            wheel=True,
-            imu_noise_std=0.05,
-            wheel_noise_std=0.05,
-            sensor_seed=5,
-        ),
-        dt=0.1,
-        fallback_track_width=0.2,
-        lidar_mounts=mounts,
-    )
-    raw = np.full(32, 3.0)
-    a, b = [], []
-    for k in range(5):
-        a.append(only_lidar.update(v=0.5, vy=0.0, omega=0.0, theta=0.0, t=0.1 * k, raw_scan=raw)["scan"])
-        b.append(all_on.update(v=0.5, vy=0.0, omega=0.0, theta=0.0, t=0.1 * k, raw_scan=raw)["scan"])
-    assert all(np.array_equal(x, y) for x, y in zip(a, b))
-    assert set(only_lidar.update(v=0.5, vy=0.0, omega=0.0, theta=0.0, t=1.0, raw_scan=raw)) == {
-        "scan",
-        "scan_meta",
-    }
+# ═════════════════════════════════════════════════════════════════════
+# 8. reset：清空延迟缓冲与差分历史，但不重播种
+# ═════════════════════════════════════════════════════════════════════
 
 
-def test_suite_only_emits_enabled_keys() -> None:
-    mounts = ((0.145, 0.0, 0.0), (-0.155, 0.0, float(np.pi)))
+def test_reset_clears_latency_buffer_and_imu_history() -> None:
     suite = SensorSuite(
-        SensorConfig(imu=True, sensor_seed=1),
-        dt=0.1,
-        fallback_track_width=0.2,
-        lidar_mounts=mounts,
+        [Lidar("scan", n_rays=4, latency_steps=1), Imu("imu")], raycast=_constant(1.0)
     )
-    reading = suite.update(v=0.5, vy=0.0, omega=0.0, theta=0.0, t=0.1)
-    assert set(reading) == {"imu"}
-    assert suite.lidar_params is None
-    assert suite.track_width == 0.2
+    _run_steps(suite, 3)
+    suite.reset()
+    first = suite.update(v=1.0, vy=0.0, omega=0.0, theta=0.0, t=0.0)
+    # 延迟缓冲重新预热：第一步交付 None
+    assert first["scan"]["scan"] is None
+    # IMU 差分历史清零：又是"首步 ax=0"
+    assert first["imu"]["ax"] == pytest.approx(0.0)
+
+
+# ═════════════════════════════════════════════════════════════════════
+# 9. import 纯净性（子进程断言）
+# ═════════════════════════════════════════════════════════════════════
+
+
+def test_sensors_import_does_not_pull_heavy_modules() -> None:
+    code = (
+        "import sys\n"
+        "import chassis_sim\n"
+        "import chassis_sim.sensors\n"
+        "heavy = ('matplotlib', 'irsim', 'numba', 'torch', 'shapely', 'scipy')\n"
+        "bad = [m for m in heavy if m in sys.modules]\n"
+        "print(bad)\n"
+        "assert not bad, bad\n"
+    )
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    out = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert out.stdout.strip() == "[]"

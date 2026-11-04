@@ -287,7 +287,9 @@ class DwaController(Controller):
 
         mode = str(heading_mode).strip().lower()
         if mode not in ("axis", "nose"):
-            raise ValueError(f"heading_mode 只能是 'axis' 或 'nose'，收到 {heading_mode!r}")
+            raise ValueError(
+                f"heading_mode 只能是 'axis' 或 'nose'，收到 {heading_mode!r}"
+            )
         self.heading_mode = mode
 
         gmode = str(gear_mode).strip().lower()
@@ -312,11 +314,13 @@ class DwaController(Controller):
         self._segs = None
         self._s_cum = None
         self._seg_len = None
-        self._seg_dir = None   # 每段的运动方向（弧长窗口平滑）
+        self._seg_dir = None  # 每段的运动方向（弧长窗口平滑）
         self._seg_gear = None  # 每段的档位：+1 前进 / −1 倒车
 
         # 档位滞回状态（回合边界由 _reset_gear 清空）
-        self._gear = None      # None = 尚未定档（首次 act 直接采纳 raw，同主仓 GearVoteLag）
+        self._gear = (
+            None  # None = 尚未定档（首次 act 直接采纳 raw，同主仓 GearVoteLag）
+        )
         self._gear_vote = 0.0
         self._gear_hold = 0
         self.gear_switches = 0
@@ -361,7 +365,9 @@ class DwaController(Controller):
         # 弧长坐标：进度项 w_prog 用"候选末端弧长 − 当前弧长"作为前进距离
         self._s_cum, self._seg_len = arc_lengths(self._path)
         # 档位判据：段的**运动方向**（弧长窗口平滑）与段起点鼻向的夹角 > π/2 ⇒ 倒车段
-        self._seg_dir = _smoothed_tangents(self._path, self._s_cum, self.gear_dir_window)
+        self._seg_dir = _smoothed_tangents(
+            self._path, self._s_cum, self.gear_dir_window
+        )
         self._seg_gear = _segment_gears(self._path, self._seg_dir)
         self._reset_gear()
 

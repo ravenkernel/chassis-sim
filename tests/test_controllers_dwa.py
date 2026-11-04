@@ -131,6 +131,7 @@ def test_dwa_is_deterministic_under_identical_input():
     a2 = ctrl.act(obs)
     assert np.array_equal(a1, a2)
 
+
 # ── 反振荡/脱困改造（2026-11-04）───────────────────────────────────
 # 背景：obstacles_dense 上原实现在路径折返点（cusp）前 0.2 m 处来回抖满 500 步、
 # 成功率 0%。根因是 w_heading 用**鼻向**判据：cusp 前后两条腿的鼻向差近 π，
@@ -159,7 +160,9 @@ def test_dwa_axis_heading_ignores_nose_flip():
         )
         ctrl.set_path(path)
         # 一个候选：从 (0.2,0) 朝 +x 走 1 m，末端 (1.2,0) 落在路径上 ⇒ d_end = 0
-        return float(ctrl._score(0.2, 0.0, 0.0, np.array([0.0]), np.array([1.0]), None)[0])
+        return float(
+            ctrl._score(0.2, 0.0, 0.0, np.array([0.0]), np.array([1.0]), None)[0]
+        )
 
     axis_fwd = _cost(nose_fwd, "axis")
     axis_flip = _cost(nose_flip, "axis")
@@ -195,12 +198,14 @@ def test_dwa_progress_term_breaks_forward_backward_tie():
         w_prog=2.0,
     )
     ctrl.set_path(path)
-    cost = ctrl._score(
-        1.0, 0.0, 0.0, np.array([0.0, 0.0]), np.array([1.0, -1.0]), None
-    )
+    cost = ctrl._score(1.0, 0.0, 0.0, np.array([0.0, 0.0]), np.array([1.0, -1.0]), None)
     # 前进：ds = 2.0 - 1.0 = 1.0（== horizon*dt*v_max，未饱和）；后退：ds = -1.0 → 饱和到 -0.5
-    assert abs(cost[0] - (-2.0)) < 1e-9, f"前进候选代价应 ≈ -w_prog*1.0，实际 {cost[0]:.6f}"
-    assert abs(cost[1] - (2.0 * 0.5)) < 1e-9, f"后退候选代价应 ≈ +w_prog*0.5，实际 {cost[1]:.6f}"
+    assert abs(cost[0] - (-2.0)) < 1e-9, (
+        f"前进候选代价应 ≈ -w_prog*1.0，实际 {cost[0]:.6f}"
+    )
+    assert abs(cost[1] - (2.0 * 0.5)) < 1e-9, (
+        f"后退候选代价应 ≈ +w_prog*0.5，实际 {cost[1]:.6f}"
+    )
 
 
 def test_dwa_defaults_are_axis_and_progress():
@@ -321,9 +326,7 @@ def test_dwa_gear_hold_steps_is_a_hard_floor():
 def test_dwa_gear_span_truncates_to_active_gear():
     """档位把候选速度截到半轴；min_speed 再去掉 0；off 模式原样返回（ablation）。"""
     path = _nose_flip_path()
-    off = DwaController(
-        chassis=_StubDiff(v_max=1.2, v_min=-1.0, omega_max=1.2), dt=DT
-    )
+    off = DwaController(chassis=_StubDiff(v_max=1.2, v_min=-1.0, omega_max=1.2), dt=DT)
     off.set_path(path)
     assert off.gear_mode == "off"
     assert off._gear_active() is False
@@ -373,7 +376,12 @@ def test_dwa_gear_auto_forward_path_never_reverses():
         counts.append(ctrl.last_candidate_count)
         state = _integrate(state, cmd, DT)
     vs = np.asarray(vs)
-    print("DWA auto 直线：v 前 3 =", np.round(vs[:3], 6), "| min v =", round(float(vs.min()), 6))
+    print(
+        "DWA auto 直线：v 前 3 =",
+        np.round(vs[:3], 6),
+        "| min v =",
+        round(float(vs.min()), 6),
+    )
     assert np.all(vs >= 0.0), f"前进场景出现负速度：min v = {vs.min():.6f}"
     assert set(np.round(np.asarray(gears), 9)) == {1.0}
     assert ctrl.gear_switches == 0
@@ -467,4 +475,3 @@ def test_dwa_gear_auto_is_deterministic_under_identical_input():
     assert np.array_equal(a1, a2), "两次运行的动作不一致"
     assert np.array_equal(p1, p2), "两次运行的位姿不一致"
     assert s1 == s2 and g1 == g2
-

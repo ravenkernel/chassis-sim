@@ -2,8 +2,11 @@
 
 运行：/home/zhao/anaconda3/envs/drl2/bin/python examples/sensors_demo.py
 
-传感器只写进 info、不进 obs：本脚本直接读 bridge 的 get_sensor_reading()，
-env 路径等价于 info["imu"] / info["wheel"] / info["scan"] / info["scan_meta"]。
+传感器只写进 info、不进 obs（0.2.0 起默认观测是最小集，与开不开传感器无关）：
+本脚本直接读 bridge 的 get_sensor_reading()，env 路径等价于 info["imu"] /
+info["wheel"] / info["scan"]（每支传感器一个键，读数字典里再分 scan/scan_meta）。
+要让某支雷达真的进 obs，得用 obs_spec 的 lidar 段显式引用它 —— 见
+tests/test_envs_obs_spec.py::TestSensorReadingsInObs。
 """
 
 from __future__ import annotations
@@ -11,8 +14,8 @@ from __future__ import annotations
 import numpy as np
 
 from chassis_sim.bridges import SimpleBridge
-from chassis_sim.bridges.sensors import LidarParams, SensorConfig
 from chassis_sim.chassis import AckermannChassis
+from chassis_sim.sensors import Imu, Lidar, WheelOdom
 
 _PATH = np.column_stack([np.linspace(1.0, 6.0, 40), np.full(40, 2.0), np.zeros(40)])
 _OBSTACLES = [
@@ -21,15 +24,16 @@ _OBSTACLES = [
 
 
 def make_bridge(**lidar_kw) -> SimpleBridge:
-    cfg = SensorConfig(
-        lidar=LidarParams(**lidar_kw),
-        imu=True,
-        wheel=True,
-        imu_noise_std=0.02,
-        wheel_noise_std=0.01,
+    """三支传感器各一条独立随机流；spec 直接给对象，不再包一层配置容器。"""
+    bridge = SimpleBridge(
+        AckermannChassis(),
+        sensors=[
+            Imu("imu", noise_std=0.02),
+            WheelOdom("wheel", noise_std=0.01),
+            Lidar("scan", n_rays=180, **lidar_kw),
+        ],
         sensor_seed=2026,
     )
-    bridge = SimpleBridge(AckermannChassis(), sensors=cfg)
     bridge.reset(
         obstacles=_OBSTACLES,
         path_waypoints=_PATH.copy(),
@@ -50,8 +54,8 @@ def main() -> None:
         reading = bridge.get_sensor_reading()
         imu = reading["imu"]
         wheel = reading["wheel"]
-        scan = reading["scan"]
-        meta = reading["scan_meta"]
+        scan = reading["scan"]["scan"]
+        meta = reading["scan"]["scan_meta"]
         print(
             f"step {k:2d} t={imu['t']:.1f} | imu ax={imu['ax']:+.6f} "
             f"ay={imu['ay']:+.6f} yaw_rate={imu['yaw_rate']:+.6f} yaw={imu['yaw']:+.6f}"
@@ -70,7 +74,7 @@ def main() -> None:
     delayed = make_bridge(latency_steps=3)
     for k in range(1, 8):
         delayed.step(np.array([0.0, 0.5], dtype=np.float64))
-        meta = delayed.get_sensor_reading()["scan_meta"]
+        meta = delayed.get_sensor_reading()["scan"]["scan_meta"]
         print(
             f"step {k} t={meta['t']:.1f} valid={meta['valid']} "
             f"frame_t={meta['frame_t']} dropped={meta['dropped']}"
@@ -83,8 +87,9 @@ def main() -> None:
         dropping.step(np.array([0.0, 0.5], dtype=np.float64))
         reading = dropping.get_sensor_reading()
         print(
-            f"step {k} scan={reading['scan']} "
-            f"dropped={reading['scan_meta']['dropped']} v={reading['wheel']['v']:+.6f}"
+            f"step {k} scan={reading['scan']['scan']} "
+            f"dropped={reading['scan']['scan_meta']['dropped']} "
+            f"v={reading['wheel']['v']:+.6f}"
         )
 
 

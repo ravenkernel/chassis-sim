@@ -51,8 +51,11 @@ from chassis_sim.scenarios.scenario import (
     ScenarioValidationError,
 )
 
-__all__ = ["ScenarioResetOptionsFactory", "scenario_reset_options_factory",
-           "scenario_to_reset_options"]
+__all__ = [
+    "ScenarioResetOptionsFactory",
+    "scenario_reset_options_factory",
+    "scenario_to_reset_options",
+]
 
 _PLANNING_IMPORT_HINT = (
     "场景 {name!r} 需要 Hybrid-A* 地图生成器（chassis_sim.planning），它依赖 numba。"
@@ -344,4 +347,3 @@ def scenario_reset_options_factory(
     return ScenarioResetOptionsFactory(
         scenario, base_seed=base_seed, max_retries=max_retries
     )
-

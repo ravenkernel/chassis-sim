@@ -30,6 +30,19 @@ if TYPE_CHECKING:
     import torch
 from chassis_sim.envs.path_extractor import PathExtractor
 from chassis_sim.envs.path_utils import cartesian_to_polar as _cartesian_to_polar
+from chassis_sim.obs import (
+    Act,
+    Err,
+    Goal,
+    GoalSig,
+    LidarSegment,
+    ObsContext,
+    ObsSpec,
+    Odom,
+    PathProgress,
+    PathValid,
+)
+from chassis_sim.obs import Path as PathSegment
 
 
 class ObsLayout:
@@ -149,6 +162,38 @@ class ObsLayout:
             "err", "goal_sig", "path_valid", "path_progress"。
         """
         return {name: obs[..., s:e] for name, (s, e) in self._slices.items()}
+
+    def as_spec(self) -> ObsSpec:
+        """把 9 段布局翻译成等价的 ObsSpec（v0.1.4 的 494 维预设）。
+
+        段序、宽度、算式与 :meth:`build` 完全相同，因此
+        ``spec.resolved().build(ctx)`` 与 ``build(...)`` 逐位一致 —— 本方法
+        就是测试里用来对拍旧实现的那把尺子，也是老训练脚本迁移到 0.2.0 的
+        显式入口。
+
+        lidar 段引用 ``("legacy_front", "legacy_rear")`` 两个名字（各 180 线，
+        共 360 维），其余 8 段直接映射到同名段类。库**不**把 494 当默认观测：
+        默认是 ``ObsSpec.default()``（128 维），494 只是可显式选择的预设。
+        """
+        half = self.LIDAR // 2
+        return ObsSpec(
+            [
+                LidarSegment(
+                    "lidar",
+                    sensors=("legacy_front", "legacy_rear"),
+                    pool="none",
+                    ray_counts={"legacy_front": half, "legacy_rear": half},
+                ),
+                Odom(),
+                PathSegment(self.max_path_points),
+                Goal(),
+                Act(self.action_dim),
+                Err(),
+                GoalSig(),
+                PathValid(),
+                PathProgress(),
+            ]
+        )
 
     def build(
         self,
@@ -334,7 +379,7 @@ class ObservationBuilder:
         """Clear temporal state at episode start."""
         self._odom_initialized = False
 
-    def build(
+    def build_context(
         self,
         raw: dict,
         prev_delta: float = 0.0,
@@ -342,10 +387,17 @@ class ObservationBuilder:
         err_signals: np.ndarray | None = None,
         goal_signals: np.ndarray | None = None,
         path_progress: float | np.ndarray = 0.0,
-    ) -> np.ndarray:
-        """组装原始观测。
+        extra_lidar: dict[str, np.ndarray] | None = None,
+    ) -> ObsContext:
+        """把 raw 传感器字典算成 :class:`ObsContext`（只计算，不拼接）。
+
+        与 :meth:`build` 共用同一套算式与同一份时序状态（里程计差分、路径
+        提取器），区别只在产出：这里给具名上下文，由 ``ObsSpec`` 决定怎么拼；
+        ``build`` 继续按 ObsLayout 拼定长向量（v0.1.4 的 494 维逐位不变）。
 
         Args:
+            extra_lidar: 额外可被 lidar 段引用的帧（传感器名 → (n,) 读数）。
+                与 ``legacy_front``/``legacy_rear`` 重名时以本参数为准。
             path_progress: 沿参考路径的**已完成比例**（env 侧真值
                 ``arc_completion = _target_idx/(n_pts-1)``）。必须传入**当步**
                 的值（与奖励侧 timeout 缩放用的是同一个量）；reset 时传 0.0。
@@ -354,7 +406,11 @@ class ObservationBuilder:
         # ── LiDAR & Odometry (保持原样) ──────────────────────
         lf = np.asarray(raw["lidar_front"], dtype=np.float32)
         lr = np.asarray(raw["lidar_rear"], dtype=np.float32)
-        lidar_360 = np.concatenate([lf, lr])
+        # legacy 两键是 v0.1.4 的 360 维契约（前/后各 180）；其它传感器帧由 env
+        # 经 extra_lidar 叠加，重名时以额外帧为准（套件读数优先于 legacy）。
+        lidar: dict[str, np.ndarray] = {"legacy_front": lf, "legacy_rear": lr}
+        if extra_lidar:
+            lidar.update(extra_lidar)
 
         odom_raw = raw["odometry"]
         x, y, theta = float(odom_raw[0]), float(odom_raw[1]), float(odom_raw[2])
@@ -449,16 +505,50 @@ class ObservationBuilder:
         if goal_signals is None:
             goal_signals = np.zeros(self._layout.GOAL_SIG, dtype=np.float32)
 
-        return self._layout.build(
-            lidar_360,
-            odom_rel,
-            path_flat,
-            rel_goal,
-            prev_act,
-            err_signals,
-            goal_signals,
-            path_valid_frac,
+        return ObsContext(
+            lidar=lidar,
+            odom_rel=odom_rel,
+            path_flat=path_flat,
+            goal=rel_goal,
+            act=prev_act,
+            err=err_signals,
+            goal_sig=goal_signals,
+            path_valid=path_valid_frac,
             path_progress=path_progress,
+        )
+
+    def build(
+        self,
+        raw: dict,
+        prev_delta: float = 0.0,
+        prev_v: float = 0.0,
+        err_signals: np.ndarray | None = None,
+        goal_signals: np.ndarray | None = None,
+        path_progress: float | np.ndarray = 0.0,
+    ) -> np.ndarray:
+        """组装 v0.1.4 的定长原始观测（9 段、30 路径点 ⇒ 494 维）。
+
+        0.2.0 的 env 已改走 :meth:`build_context` + ``ObsSpec``；本方法保留为
+        兼容入口，同时是逐位对拍的金标准（段序与算式必须与 as_spec() 一致）。
+        """
+        ctx = self.build_context(
+            raw,
+            prev_delta=prev_delta,
+            prev_v=prev_v,
+            err_signals=err_signals,
+            goal_signals=goal_signals,
+            path_progress=path_progress,
+        )
+        return self._layout.build(
+            np.concatenate([ctx.lidar["legacy_front"], ctx.lidar["legacy_rear"]]),
+            ctx.odom_rel,
+            ctx.path_flat,
+            ctx.goal,
+            ctx.act,
+            ctx.err,
+            ctx.goal_sig,
+            ctx.path_valid,
+            path_progress=ctx.path_progress,
         )
 
     @staticmethod

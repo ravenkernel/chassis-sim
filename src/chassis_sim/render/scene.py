@@ -1,9 +1,10 @@
 """渲染场景快照：与 matplotlib 完全解耦的只读数据视图。
 
-本任务边界禁止修改 `chassis_sim.bridges`，而 `SimpleBridge` 没有公开障碍物访问器，
-因此这里以**只读**方式读取桥的私有数组（`_circle_centers` / `_circle_radii` /
-`_rect_centers` / `_rect_half_dims` / `_rect_thetas`）与真实位姿
-（`_x` / `_y` / `_theta`）。渲染层只读取、不写回，也不改变桥的任何行为。
+场景优先走桥的**公开只读方法**：`pose()`、`obstacle_shapes()`（`SimpleBridge` 本轮
+新增的两个访问器，语义与 `reset(obstacles=...)` 的输入格式一致）。桥没有这两个
+方法时（第三方同构桥）退回读私有数组（`_circle_centers` / `_circle_radii` /
+`_rect_centers` / `_rect_half_dims` / `_rect_thetas` / `_x` / `_y` / `_theta`），
+再退回 `get_odometry()`。渲染层只读取、不写回，也不改变桥的任何行为。
 
 参考路径的第 2 列是**车头鼻向**（不是运动方向），所以倒车段上鼻向与运动方向相差 π；
 `split_path_by_direction` 据此把路径切成前进 / 倒车两组折线，供着色使用。
@@ -72,6 +73,7 @@ class Scene:
     path: np.ndarray
     lidar_mounts: tuple[tuple[float, float, float], tuple[float, float, float]]
     max_range: float = 10.0
+    wheelbase: float | None = None  # 轴距（米）；拿不到时为 None，渲染层按 footprint 推
 
     @property
     def n_obstacles(self) -> int:
@@ -86,8 +88,150 @@ class Scene:
         return replace(self, pose=(float(arr[0]), float(arr[1]), float(arr[2])))
 
 
+def _wheelbase_from(chassis: object) -> float | None:
+    """读取底盘轴距（米）；没有 / 不是正有限数时给 None。"""
+    value = getattr(chassis, "wheelbase", None)
+    try:
+        wheelbase = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(wheelbase) or wheelbase <= 0.0:
+        return None
+    return wheelbase
+
+
+def _arrays_from_shapes(
+    shapes: object,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None:
+    """把 `obstacle_shapes()` 的 dict 列表转成五组障碍物数组。
+
+    输入格式与 `SimpleBridge.reset(obstacles=...)` 一致；遇到未知形状返回 None，
+    调用方据此退回去读私有数组（不静默丢障碍物）。
+    """
+    circles: list[list[float]] = []
+    radii: list[float] = []
+    rect_centers: list[list[float]] = []
+    rect_half_dims: list[list[float]] = []
+    rect_thetas: list[float] = []
+    for item in shapes or ():  # type: ignore[union-attr]
+        try:
+            shape = dict(item["shape"])
+            state = np.asarray(item["state"], dtype=np.float64).reshape(-1)
+        except (KeyError, TypeError, ValueError):
+            return None
+        if state.size < 2:
+            return None
+        name = str(shape.get("name", "")).strip().lower()
+        if name == "circle":
+            circles.append([float(state[0]), float(state[1])])
+            radii.append(float(shape.get("radius", 0.0)))
+        elif name in ("rectangle", "rect"):
+            rect_centers.append([float(state[0]), float(state[1])])
+            rect_half_dims.append(
+                [
+                    float(shape.get("length", 0.0)) * 0.5,
+                    float(shape.get("width", 0.0)) * 0.5,
+                ]
+            )
+            rect_thetas.append(float(state[2]) if state.size > 2 else 0.0)
+        else:
+            return None
+    return (
+        np.asarray(circles, dtype=np.float64).reshape(-1, 2),
+        np.asarray(radii, dtype=np.float64).reshape(-1),
+        np.asarray(rect_centers, dtype=np.float64).reshape(-1, 2),
+        np.asarray(rect_half_dims, dtype=np.float64).reshape(-1, 2),
+        np.asarray(rect_thetas, dtype=np.float64).reshape(-1),
+    )
+
+
+def _obstacle_arrays(
+    bridge: object,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """优先读公开 `obstacle_shapes()`，退回私有数组。"""
+    public = getattr(bridge, "obstacle_shapes", None)
+    if callable(public):
+        try:
+            arrays = _arrays_from_shapes(public())
+        except (TypeError, ValueError, AttributeError):
+            arrays = None
+        if arrays is not None:
+            return arrays
+    return (
+        _as_pairs(getattr(bridge, "_circle_centers", None), 2),
+        _as_scalars(getattr(bridge, "_circle_radii", None)),
+        _as_pairs(getattr(bridge, "_rect_centers", None), 2),
+        _as_pairs(getattr(bridge, "_rect_half_dims", None), 2),
+        _as_scalars(getattr(bridge, "_rect_thetas", None)),
+    )
+
+
+def steering_angle(bridge: object) -> float | None:
+    """读取当前前轮转角（弧度）；拿不到就给 None（渲染层随即使四轮对齐车身）。"""
+    owners = [bridge, getattr(bridge, "chassis", None)]
+    names = ("steering_angle", "steer_angle")
+    for owner in owners:
+        if owner is None:
+            continue
+        for name in names:
+            value = getattr(owner, name, None)
+            if callable(value):
+                try:
+                    value = value()
+                except (TypeError, ValueError, AttributeError):
+                    continue
+            if value is None:
+                continue
+            try:
+                angle = float(value)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(angle):
+                return angle
+    return None
+
+
+def _point_to_box_distance(px: float, py: float, half_l: float, half_w: float) -> float:
+    """车体中心到（已平移到局部系）轴对齐矩形的表面距离；内部给 0。"""
+    dx = max(abs(px) - half_l, 0.0)
+    dy = max(abs(py) - half_w, 0.0)
+    return math.hypot(dx, dy)
+
+
+def nearest_obstacle_distance(scene: Scene) -> float | None:
+    """车体中心到最近障碍物表面的距离（米）；没有障碍物给 None。"""
+    px, py = float(scene.pose[0]), float(scene.pose[1])
+    best: float | None = None
+    for center, radius in zip(scene.circle_centers, scene.circle_radii):
+        gap = math.hypot(px - float(center[0]), py - float(center[1])) - float(radius)
+        gap = max(gap, 0.0)
+        best = gap if best is None else min(best, gap)
+    for center, half_dims, theta in zip(
+        scene.rect_centers, scene.rect_half_dims, scene.rect_thetas
+    ):
+        dx = px - float(center[0])
+        dy = py - float(center[1])
+        cos_t = math.cos(-float(theta))
+        sin_t = math.sin(-float(theta))
+        local_x = dx * cos_t - dy * sin_t
+        local_y = dx * sin_t + dy * cos_t
+        gap = _point_to_box_distance(
+            local_x, local_y, float(half_dims[0]), float(half_dims[1])
+        )
+        best = gap if best is None else min(best, gap)
+    return best
+
+
 def pose_from_bridge(bridge: object) -> tuple[float, float, float]:
-    """读取桥的真实位姿；没有私有位姿字段时退回 `get_odometry()`。"""
+    """读取桥的真实位姿：优先公开 `pose()`，其次私有字段，最后 `get_odometry()`。"""
+    public = getattr(bridge, "pose", None)
+    if callable(public):
+        try:
+            arr = np.asarray(public(), dtype=np.float64).reshape(-1)
+        except (TypeError, ValueError):
+            arr = np.empty((0,), dtype=np.float64)
+        if arr.size >= 3:
+            return (float(arr[0]), float(arr[1]), float(arr[2]))
     if all(hasattr(bridge, name) for name in ("_x", "_y", "_theta")):
         return (
             float(bridge._x),
@@ -128,18 +272,21 @@ def scene_from_bridge(bridge: object) -> Scene:
     else:
         path = normalize_path(getattr(bridge, "_path_waypoints_global", None))
 
+    circles, radii, rect_centers, rect_half_dims, rect_thetas = _obstacle_arrays(bridge)
+
     return Scene(
         world_bounds=world_bounds,
         footprint=(float(footprint[0]), float(footprint[1])),
         pose=pose_from_bridge(bridge),
-        circle_centers=_as_pairs(getattr(bridge, "_circle_centers", None), 2),
-        circle_radii=_as_scalars(getattr(bridge, "_circle_radii", None)),
-        rect_centers=_as_pairs(getattr(bridge, "_rect_centers", None), 2),
-        rect_half_dims=_as_pairs(getattr(bridge, "_rect_half_dims", None), 2),
-        rect_thetas=_as_scalars(getattr(bridge, "_rect_thetas", None)),
+        circle_centers=circles,
+        circle_radii=radii,
+        rect_centers=rect_centers,
+        rect_half_dims=rect_half_dims,
+        rect_thetas=rect_thetas,
         path=path,
         lidar_mounts=mounts,  # type: ignore[arg-type]
         max_range=float(getattr(bridge, "max_range", 10.0)),
+        wheelbase=_wheelbase_from(chassis),
     )
 
 

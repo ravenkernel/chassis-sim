@@ -14,7 +14,7 @@
    两者几何完全一致（(1,5) → (9,5)，0.05 m 间隔）。
 7. safety_gate 仅阿克曼可用（它夹的物理量是 (δ, v)）。
 8. action 形状校验；mapped_action 宽度 = action_dim；观测 act 段宽度 =
-   action_dim（差速 2 / 麦轮 3，见 _with_chassis_acts）。
+   action_dim（差速 2 / 麦轮 3，见 _act_vector）。
 9. 物理动作由 Chassis.command() 在 float64 里算出再交给桥；主仓把
     mapped_action 存成 float32 并用它积分。同一串动作下两侧状态会从 float32
     舍入位开始漂移，实测 100 步后观测 max|Δ| = 9.5e-07（float32 eps 的 8 倍），
@@ -29,7 +29,7 @@ import inspect
 import re
 import sys
 import warnings
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, ClassVar
 
 import gymnasium as gym
@@ -37,11 +37,12 @@ import numpy as np
 from gymnasium import spaces
 
 from chassis_sim.bridges import SensorProvider, SimpleBridge
-from chassis_sim.bridges.sensors import SensorConfig
 from chassis_sim.chassis import Chassis, make_chassis
 from chassis_sim.envs.config import EnvConfig, RewardConfig
 from chassis_sim.envs.observation import ObservationBuilder, ObsLayout
 from chassis_sim.envs.reward import RewardCalculator
+from chassis_sim.obs import ObsSpec
+from chassis_sim.sensors import Imu, Lidar, WheelOdom
 
 # 零速判据：|v| 小于它时无法由 ω 反解转角（与 controllers/base.py 的 V_EPS 同值）
 V_EPS = 1e-6
@@ -277,9 +278,13 @@ class ChassisSimEnv(gym.Env):
       * diff_drive: [速度标度, 横摆标度]
       * mecanum: [速度标度, 横移标度, 横摆标度]
 
-    两个构造器开关不同层：dynamics= 只是**覆盖** cfg 选中的动力学档位
-    （"none"/"limits"/"wheel"，None = 按 cfg），sensors= 是**装配**一套传感器
-    （由 env 自己造的桥持有）。前者改物理口径，后者只经 info 曝光读数。
+    三个构造器开关各管一层：dynamics= 只是**覆盖** cfg 选中的动力学档位
+    （"none"/"limits"/"wheel"，None = 按 cfg）；sensors= 是**装配**一套传感器
+    （由 env 自己造的桥持有，每支一条独立随机流，seed 由 sensor_seed= 给；
+    读数只经 info 曝光，除非 obs_spec 里的 lidar 段显式引用它）；obs_spec=
+    决定观测怎么拼（None ⇒ ObsSpec.default()，即
+    odom+path+goal+act 的 128 维最小集；v0.1.4 的 494 维要显式传
+    ObsLayout(2, 30).as_spec()）。
     """
 
     metadata: ClassVar[dict[str, list[str]]] = {"render_modes": ["human"]}
@@ -297,7 +302,7 @@ class ChassisSimEnv(gym.Env):
         chassis: Any = "ackermann",
         *,
         bridge: SensorProvider | None = None,
-        sensors: SensorConfig | None = None,
+        sensors: Sequence[Lidar | Imu | WheelOdom] | None = None,
         dynamics: str | None = None,
         cfg: EnvConfig | None = None,
         reward_cfg: RewardConfig | None = None,
@@ -311,6 +316,8 @@ class ChassisSimEnv(gym.Env):
         dt: float | None = None,
         path_lookahead: float = 20.0,
         max_path_points: int = 30,
+        obs_spec: ObsSpec | None = None,
+        sensor_seed: int = 0,
         path_power: float = 2.0,
         extrapolate_path: bool = True,
         path_fill_mode: str = "extrapolate",
@@ -441,6 +448,12 @@ class ChassisSimEnv(gym.Env):
                 "注入的 bridge 用的是另一台 Chassis 实例：动作映射与物理必须"
                 "同源，请传同一个实例（如 SimpleBridge(self.chassis, ...)）"
             )
+        # env 自造桥时记下传感器声明：只为给 obs_spec 的 lidar 段补 n_rays
+        # （注入 bridge= 的路径上 sensors= 会被下面拒绝，这里存的是空元组）
+        self._sensor_specs: tuple[Any, ...] = () if sensors is None else tuple(sensors)
+        # 每个 lidar 名最后一次**有效**扫描（S3b 零阶保持）：丢帧 / latency 预热
+        # 期用它顶上，绝不谎报"四周空旷"。只存真实读数，reset 时清空。
+        self._lidar_last_scan: dict[str, np.ndarray] = {}
         if bridge is None:
             _wbounds = _DEFAULT_WORLD_BOUNDS if world_bounds is None else world_bounds
             bridge = SimpleBridge(
@@ -456,6 +469,7 @@ class ChassisSimEnv(gym.Env):
                 goal_end_wp_count=int(_ec.goal_end_wp_count),
                 goal_end_wp_margin=int(_ec.goal_end_wp_margin),
                 sensors=sensors,
+                sensor_seed=int(sensor_seed),
             )
         elif sensors is not None:
             # sensors= 与注入 bridge= **互斥**（这里选择抛错而不是"事后转交"）：
@@ -628,23 +642,27 @@ class ChassisSimEnv(gym.Env):
             path_lookahead_floor=path_lookahead_floor,
         )
 
-        # Observation: 原始传感器维度 + Critic 用的 privileged 尾部
+        # Observation: 段布局完全由 ObsSpec 决定（0.2.0），Critic 的 privileged
+        # 尾部仍追加在整条向量最末（因此不影响 spec 内部的切片）。
         priv_dim = _ec.privileged_bins if _ec.privileged_enabled else 0
-        self._base_obs_dim = self.obs_builder.layout.total_dim  # 来自 ObsLayout
-        # act 段宽度 = action_dim：builder 内部 layout 仍按 2 维建（
-        # observation.py:295 硬编码），3 维车型由 _with_chassis_acts 补位。
-        self._layout = ObsLayout(
-            action_dim=self.action_dim, max_path_points=self._max_path_points
-        )
-        _tail = (
-            ObsLayout.ERR
-            + ObsLayout.GOAL_SIG
-            + ObsLayout.PATH_VALID
-            + ObsLayout.PATH_PROGRESS
-        )
-        self._builder_act_dim = self.obs_builder.layout.action_dim
-        self._builder_act_end = self._base_obs_dim - _tail
-        self._full_obs_dim = self._layout.total_dim + priv_dim  # e.g. 494+36
+        if obs_spec is None:
+            # 默认最小集 odom+path+goal+act ⇒ 128 维（麦轮 act 3 维 ⇒ 129）。
+            obs_spec = ObsSpec.default(
+                action_dim=self.action_dim, path_points=self._max_path_points
+            )
+        self.obs_spec = obs_spec
+        # resolved() 一次钉死各段宽度：lidar 段缺射线数在这里就报错，而不是等
+        # 第一个 step 拼观测时才炸（那时错误离原因已经很远）。
+        self._obs_resolved = self.obs_spec.resolved(self._sensor_meta())
+        self._obs_slices = self._obs_resolved.describe()
+        self._base_obs_dim = self._obs_resolved.total_dim
+        self._full_obs_dim = self._base_obs_dim + priv_dim
+        _act_sl = self._obs_slices.get("act")
+        if _act_sl is not None and (_act_sl.stop - _act_sl.start) > self.action_dim:
+            raise ValueError(
+                f"obs_spec 的 act 段宽 {_act_sl.stop - _act_sl.start} 超过 "
+                f"action_dim={self.action_dim}：底盘给不出这么多动作分量"
+            )
         self.observation_space = spaces.Box(
             low=-np.inf,
             high=np.inf,
@@ -791,6 +809,9 @@ class ChassisSimEnv(gym.Env):
             _dyn = None
         if _dyn is not None:
             self._dynamic_obstacles = [dict(_spec) for _spec in _dyn]
+        # 跨回合清空 last-valid scan 缓存：否则上一回合末帧会被零阶保持进新回合。
+        # 必须在 bridge.reset() 之前清 —— reset 会产出首帧，_build_obs 随后把它写回。
+        self._lidar_last_scan.clear()
         self.bridge.reset(
             obstacles=obstacles, path_waypoints=path, initial_heading=initial_heading
         )
@@ -826,13 +847,15 @@ class ChassisSimEnv(gym.Env):
         prev_v = self._prev_action[1]
         # reset 时 _target_idx 刚归零 ⇒ 真值 arc_completion = 0/(n_pts-1) = 0，
         # 显式传 0.0（观测里的进度维在回合起点必须归零）。
-        obs_np = self.obs_builder.build(
+        obs_np = self._build_obs(
             raw, prev_delta=prev_delta, prev_v=prev_v, path_progress=0.0
         )
-        obs_np = self._with_chassis_acts(obs_np)
         if self._priv_enabled and self._priv_encoder is not None:
             obs_np = self._append_privileged(obs_np, raw["odometry"])
-        return obs_np, {}
+        # 传感器读数与 step 共用 _sensor_info()（唯一口径）：桥在 reset 末尾已产出
+        # 真实首帧（S3b，见 SimpleBridge.reset），所以这里拿到的是本回合 t=0 的读数，
+        # 不是空字典；未启用传感器时仍是 {}（不新增任何键）。
+        return obs_np, self._sensor_info()
 
     # ── 车型适配层（W4b）──────────────────────────────────────────────
     def _v_norm(self, v: float) -> float:
@@ -959,6 +982,14 @@ class ChassisSimEnv(gym.Env):
             safety_brake = bool(self._safety_gate.brake_triggered)
         return self._encode_physical(v, omega, vy), safety_brake, v, omega
 
+    def obs_spec_describe(self) -> dict[str, slice]:
+        """obs 各段的名字 → slice（与 spec.resolved().describe() 同一份）。
+
+        注意 privileged 尾部（Critic 专用）不在其中：它恒追加在整条向量最末，
+        起点 = observation_space.shape[0] - privileged bins。
+        """
+        return dict(self._obs_slices)
+
     def describe_dynamics(self) -> dict:
         """动力学档位与**实际生效**的参数（选 limits/wheel 且 YAML 写 0 时看得到默认值）。
 
@@ -967,26 +998,145 @@ class ChassisSimEnv(gym.Env):
         """
         return dict(self._dynamics_info)
 
-    def _with_chassis_acts(self, obs: np.ndarray) -> np.ndarray:
-        """把观测 act 段从 2 维补到 action_dim 维（3 维车型插横移标度）。
+    def _build_obs(
+        self,
+        raw: dict,
+        *,
+        prev_delta: float = 0.0,
+        prev_v: float = 0.0,
+        err_signals: np.ndarray | None = None,
+        goal_signals: np.ndarray | None = None,
+        path_progress: float | np.ndarray = 0.0,
+    ) -> np.ndarray:
+        """raw → ObsContext → obs_spec → 扁平 float32（不含 privileged 尾部）。"""
+        ctx = self.obs_builder.build_context(
+            raw,
+            prev_delta=prev_delta,
+            prev_v=prev_v,
+            err_signals=err_signals,
+            goal_signals=goal_signals,
+            path_progress=path_progress,
+            extra_lidar=self._extra_lidar(),
+        )
+        ctx.act = self._act_vector(ctx.act)
+        return self._obs_resolved.build(ctx)
 
-        ObservationBuilder 内部按 ObsLayout(max_path_points=...) 建 layout，
-        action_dim 硬编码为 2（observation.py:295），而 observation.py 在本次
-        改动范围外 ⇒ 由 env 在 act 段末尾插入第 3 维（_prev_action[2]/vy_max）。
-        2 维车型直接原样返回 ⇒ 阿克曼观测逐位不变。
+    def _act_vector(self, base: np.ndarray) -> np.ndarray:
+        """按 obs_spec 的 act 段宽裁剪/扩展归一化动作。
+
+        ObservationBuilder 只算得出 2 维（[转向标度, v]；它内部的 ObsLayout 把
+        action_dim 写死为 2），3 维车型的第 3 维（横移标度
+        _prev_action[2]/vy_max）在这里补齐 —— 补在 act 段**末尾**，与 v0.1.4
+        的 _with_chassis_acts（0.2.0 已删）是同一个位置、同一个值（495 维因此逐位不变）。
+        act 段宽 ≤ 2 时按宽度截断（spec 明确只要前几维）。
         """
-        if self.action_dim == self._builder_act_dim:
-            return obs
+        act_sl = self._obs_slices.get("act")
+        if act_sl is None:
+            return base
+        width = act_sl.stop - act_sl.start
+        if width <= base.size:
+            return base[:width]
         vy_norm = 0.0
         if self._prev_action.shape[0] >= 3:
             vy_norm = float(self._prev_action[2] / max(self.vy_max, V_EPS))
-        fill = np.full(
-            self.action_dim - self._builder_act_dim, vy_norm, dtype=obs.dtype
-        )
-        cut = self._builder_act_end
-        return np.concatenate([obs[:cut], fill, obs[cut:]]).astype(
-            obs.dtype, copy=False
-        )
+        fill = np.full(width - base.size, vy_norm, dtype=base.dtype)
+        return np.concatenate([base, fill])
+
+    def _extra_lidar(self) -> dict[str, np.ndarray]:
+        """传感器套件里 Lidar 的当帧读数（名字 → ranges），供 lidar 段引用。
+
+        只收带 "scan" 键的读数（Imu / WheelOdom 的读数没有它）。缺帧（丢帧或
+        latency 预热期，scan 为 None）时的契约（S3b）：
+
+        1. 该传感器**有过**有效帧 ⇒ 交付缓存里最后一帧（零阶保持）。观测的雷达段
+           因此与上一帧逐字节相同，绝不因为一次丢帧就谎报"四周空旷"；
+        2. **从未**有过有效帧 ⇒ 用 scan_meta["range_max"] 填满。雷达语义里"这一帧
+           没有任何回波"就等于打到量程外，塞 NaN 会污染整条观测。这只是兜底：
+           正常回合里 bridge.reset() 的首帧已经写满缓存（见 SimpleBridge.reset）；
+        3. 缓存只存**真实**读数（兜底填充值不进去，否则一次预热期就会把假数据
+           永久保持下去），且只在 env.reset() 里清空，跨回合不残留上一回合的扫描。
+        """
+        extra: dict[str, np.ndarray] = {}
+        getter = getattr(self.bridge, "get_sensor_reading", None)
+        reading = getter() if callable(getter) else None
+        for name, item in (reading or {}).items():
+            if not isinstance(item, Mapping) or "scan" not in item:
+                continue
+            key = str(name)
+            scan = item["scan"]
+            if scan is not None:
+                held = np.array(scan, dtype=np.float32, copy=True)
+                extra[key] = held
+                self._lidar_last_scan[key] = held
+                continue
+            held = self._lidar_last_scan.get(key)
+            if held is not None:
+                extra[key] = held.copy()
+                continue
+            meta = item.get("scan_meta") or {}
+            extra[key] = np.full(
+                int(meta.get("n_rays", 0)),
+                float(meta.get("range_max", 0.0)),
+                dtype=np.float32,
+            )
+        # 桥没给读数（例如注入的桥没有 get_sensor_reading）：有历史就保持，
+        # 否则按"无回波 = 打到量程外"填满；宽度由 spec 自己声明，绝不靠猜。
+        for spec in self._lidar_specs():
+            key = str(spec.name)
+            if key in extra:
+                continue
+            held = self._lidar_last_scan.get(key)
+            if held is not None:
+                extra[key] = held.copy()
+            else:
+                extra[key] = np.full(
+                    int(spec.n_rays), float(spec.max_range), dtype=np.float32
+                )
+        return extra
+
+    def _sensor_info(self) -> dict[str, Any]:
+        """本回合的传感器读数（传感器名 → 读数），step / reset 的唯一口径。
+
+        传感器只经 info 曝光，obs 维度不变（见 bridges/sensors.py 的模块说明）。
+        getattr 兜底：env 允许注入任意 duck-typed 桥，未实现该非抽象 API 的桥
+        视为"未启用传感器" ⇒ 返回空 dict，调用方因此不新增任何键。
+        """
+        getter = getattr(self.bridge, "get_sensor_reading", None)
+        if getter is None:
+            return {}
+        return dict(getter() or {})
+
+    def _sensor_meta(self) -> dict[str, dict[str, int]]:
+        """lidar 段补射线数用的元数据：legacy 前/后向 + env 自带套件的 lidar 名。
+
+        legacy 两键恒为 ObsLayout.LIDAR/2 = 180 线（bridge.get_lidar_front/rear
+        的契约宽度）。注入 bridge= 时 env 看不到桥里套件的声明，那种用法下
+        spec 里引用套件雷达就必须自给 ray_counts（否则 resolved() 会点名报错）。
+        """
+        half = ObsLayout.LIDAR // 2
+        meta: dict[str, dict[str, int]] = {
+            "legacy_front": {"n_rays": half},
+            "legacy_rear": {"n_rays": half},
+        }
+        for spec in self._lidar_specs():
+            meta[str(spec.name)] = {"n_rays": int(spec.n_rays)}
+        return meta
+
+    def _lidar_specs(self) -> tuple[Lidar, ...]:
+        """env 能看到的全部 Lidar spec：构造器给的 + 桥内套件自带的（若有）。
+
+        注入 bridge= 时 env 拿不到套件声明，只能鸭子类型读桥里的
+        _sensors.specs（SensorSuite 的属性）；读不到就只剩 legacy 两键，
+        那种用法下引用套件雷达必须自己写 ray_counts。
+        """
+        candidates: list[Any] = list(self._sensor_specs)
+        suite = getattr(self.bridge, "_sensors", None)
+        candidates.extend(getattr(suite, "specs", None) or ())
+        by_name: dict[str, Lidar] = {}
+        for spec in candidates:
+            if isinstance(spec, Lidar):
+                by_name[str(spec.name)] = spec
+        return tuple(by_name.values())
 
     def _generate_scene(self):
         """跑 map_generator，只吞 MapGenerationError（按类名判定，不 import planning）。
@@ -1561,7 +1711,7 @@ class ChassisSimEnv(gym.Env):
         #     折返段/迷宫平行走廊不会像"到终点距离"那样回退；
         #   * 无状态、与 batch 形状无关（旧实现把分母存在 actor buffer 里，
         #     只在 batch=1 更新 ⇒ 生产路径 batch=16 下该维恒为 0）。
-        obs_np = self.obs_builder.build(
+        obs_np = self._build_obs(
             raw,
             prev_delta=prev_delta,
             prev_v=prev_v,
@@ -1569,7 +1719,6 @@ class ChassisSimEnv(gym.Env):
             goal_signals=_goal_signals,
             path_progress=arc_completion,
         )
-        obs_np = self._with_chassis_acts(obs_np)
         if self._priv_enabled and self._priv_encoder is not None:
             obs_np = self._append_privileged(obs_np, raw["odometry"])
 
@@ -1729,15 +1878,8 @@ class ChassisSimEnv(gym.Env):
         if self._dynamics_level != "none":
             info["dynamics"] = dict(self._dynamics_info)
         # ── 可选传感器读数（默认全关 ⇒ 不新增任何键，信息路径零变化）──────
-        # 传感器只经 info 曝光，obs 维度不变（见 bridges/sensors.py 的模块说明）。
-        # getattr 兜底：env 允许注入任意 duck-typed 桥，未实现该非抽象 API 的桥
-        # 视为"未启用传感器"，而不是构造期就崩。
-        _read_sensors = getattr(self.bridge, "get_sensor_reading", None)
-        if _read_sensors is not None:
-            _reading = _read_sensors()
-            if _reading:
-                for _key, _value in _reading.items():
-                    info[_key] = _value
+        # 与 reset() 共用 _sensor_info()：两处只有一套键名/结构口径。
+        info.update(self._sensor_info())
 
         return obs_np, reward, terminated, truncated, info
 

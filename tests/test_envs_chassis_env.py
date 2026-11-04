@@ -1,6 +1,7 @@
 """ChassisSimEnv（车型参数化环境核心，W4b）测试。
 
-覆盖：三车型 reset/step、观测维度（494 / 494 / 495）、场景注入与回退、
+覆盖：三车型 reset/step、观测维度（默认最小集 128 / 128 / 129；v0.1.4 的
+494 维由 ObsLayout.as_spec() 显式选择，见 tests/test_envs_obs_spec.py）、场景注入与回退、
 车型/桥一致性校验、info 与映射动作口径，以及**与主仓 AckermannEnv 的逐步对拍**
 （主仓不在时该组用例 skip；对拍容差与物理来源见文件末尾说明）。
 """
@@ -25,8 +26,8 @@ from chassis_sim.envs.observation import ObsLayout
 
 _DRL_SIM = "/home/zhao/drl-sim"
 CHASSIS_NAMES = ("ackermann", "diff_drive", "mecanum")
-# 观测维度：act 段宽度 = action_dim（差速 2 / 麦轮 3）
-OBS_DIMS = {"ackermann": 494, "diff_drive": 494, "mecanum": 495}
+# 默认观测 = 最小集 odom(4) + path(120) + goal(2) + act(action_dim)
+OBS_DIMS = {"ackermann": 128, "diff_drive": 128, "mecanum": 129}
 
 _OBSTACLES = [
     {"shape": {"name": "circle", "radius": 0.35}, "state": [4.5, 5.0, 0.0]},
@@ -95,10 +96,17 @@ def test_spaces_follow_chassis(env_factory, name):
     assert env.observation_space.dtype == np.float32
 
 
-def test_observation_space_matches_layout(env_factory):
+def test_observation_space_matches_default_spec(env_factory):
     env = env_factory("mecanum")
-    layout = ObsLayout(action_dim=3)
-    assert env.observation_space.shape == (layout.total_dim,)
+    assert env.observation_space.shape == (OBS_DIMS["mecanum"],)
+    assert env.obs_spec_describe() == {
+        "odom": slice(0, 4),
+        "path": slice(4, 124),
+        "goal": slice(124, 126),
+        "act": slice(126, 129),
+    }
+    # 494 是显式选择，不是默认值：ObservationBuilder 的旧布局仍独立存在
+    assert ObsLayout(action_dim=3).total_dim == 495
 
 
 def test_rejects_mismatched_bridge(env_factory):
@@ -264,12 +272,12 @@ def test_prev_action_width(env_factory, name):
 def test_mecanum_observation_carries_lateral_velocity(env_factory):
     env = env_factory("mecanum")
     env.reset(seed=0)
-    builder_layout = env.obs_builder.layout
-    cut = env._builder_act_end
+    act_sl = env.obs_spec_describe()["act"]
+    assert act_sl == slice(126, 129)
     vy_norm = 0.5
     action = np.array([0.0, vy_norm, 0.0], dtype=np.float32)
     obs, _, _, _, _ = env.step(action)
-    act_block = obs[cut - builder_layout.action_dim : cut + 1]
+    act_block = obs[act_sl]
     assert act_block.shape == (3,)
     assert act_block[2] == pytest.approx(vy_norm, abs=1e-6)
 
@@ -405,6 +413,8 @@ def _make_parity_pair(scene):
         reward_cfg=RewardConfig(),
         map_generator=scene,
         domain_rand=False,
+        # 对拍金标准是 v0.1.4 的 494 维原始观测 ⇒ 显式点名，而不是默认值
+        obs_spec=ObsLayout(action_dim=2, max_path_points=30).as_spec(),
     )
     return main, chip
 

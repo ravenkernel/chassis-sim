@@ -4,7 +4,7 @@
 --------
 ```
 render_frame(bridge, ax=None, *, show_lidar=False, show_trail=False, trail=None,
-             dpi=100.0, figsize=(6.0, 6.0)) -> matplotlib.figure.Figure
+             dpi=100.0, figsize=(6.0, 6.0), title=None) -> matplotlib.figure.Figure
 render_to_png(bridge, path, *, dpi=100.0, **kwargs) -> pathlib.Path
 render_episode_frames(bridge, actions, out_dir, *, every=1, prefix="frame",
                       show_trail=False, dpi=100.0, **kwargs) -> list[pathlib.Path]
@@ -24,12 +24,17 @@ ReplayRecorder(bridge=None, *, scene=None)
   `pip install chassis-sim[viz]`。核心依赖仍是 numpy + gymnasium + pyyaml。
 * 固定 Agg 后端、固定 dpi、PNG 元数据去掉 `Software` 字段；同一状态渲染两次
   像素逐位相同（测试比较 numpy 像素数组，不比较文件字节）。
-* 场景读取 `SimpleBridge` 的 `_circle_centers` / `_circle_radii` /
-  `_rect_centers` / `_rect_half_dims` / `_rect_thetas` 与 `_x, _y, _theta`
-  的只读快照；渲染层不写回，也不改变桥行为。
-* LiDAR 默认关闭；开启时前后两个 180 线扫描合计最多等间隔抽样 120 条。
-* 轨迹尾迹最多保留最后 500 个位姿点。
-* 参考路径按第 2 列鼻向区分前进（绿色）与倒车（紫色）段。
+* 视觉只有一套「浅色演示风」：全部颜色集中在 `render.figure.PALETTE`，
+  换风格只改这一处；轴框、刻度、白边全部去掉，画布铺满整图。
+* 场景优先读取桥的公开只读方法 `pose()` 与 `obstacle_shapes()`；桥没有这两个
+  方法时退回 `_x, _y, _theta` 与 `_circle_centers` 等私有快照。渲染层不写回，
+  也不改变桥行为。
+* HUD 的 step / t / v / ω / d_min 全部来自 `get_odometry()`、`sim_time` 与
+  场景几何；取不到的读数显示 `—`，不编数字。
+* LiDAR 默认关闭；开启时前后两个 180 线扫描合计最多等间隔抽样 60 条
+  （单条 LineCollection，向量化绘制）。
+* 轨迹尾迹最多保留最后 500 个位姿点，用一条 LineCollection 做透明度渐隐。
+* 参考路径统一青色（lw 2.0 + 下垫光晕），倒车段用虚线区分；终点画金色星形。
 
 `render_scene`（Scene 输入，无需桥）与 `save_figure` 一并导出，供回放层复用。
 """

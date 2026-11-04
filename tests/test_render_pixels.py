@@ -18,14 +18,17 @@ matplotlib = pytest.importorskip(
     reason="render 测试需要 matplotlib（pip install chassis-sim[viz]）",
 )
 
+from matplotlib.collections import LineCollection
 from matplotlib.colors import to_rgb
 from matplotlib.image import imread
 
 from chassis_sim.render import render_frame, render_to_png
 from chassis_sim.render.figure import (
-    CAR_FACE_COLOR,
-    CIRCLE_FACE_COLOR,
-    RECT_FACE_COLOR,
+    _GLOW_ALPHA,
+    _MAX_LIDAR_RAYS,
+    _OBSTACLE_ALPHA,
+    PALETTE,
+    _bridge_telemetry,
     _collect_lidar_rays,
 )
 from chassis_sim.render.scene import scene_from_bridge
@@ -90,9 +93,21 @@ def _patch(image: np.ndarray, row: int, col: int, tol: int) -> np.ndarray:
     ]
 
 
-def _min_color_delta(patch: np.ndarray, color: str) -> float:
-    expected = np.array(to_rgb(color), dtype=np.float64)
+def _min_color_delta(patch: np.ndarray, color: str | np.ndarray) -> float:
+    expected = (
+        np.array(to_rgb(color), dtype=np.float64)
+        if isinstance(color, str)
+        else np.asarray(color, dtype=np.float64)
+    )
     return float(np.min(np.abs(patch - expected)))
+
+
+def _obstacle_fill() -> np.ndarray:
+    """障碍物中心的实际像素色：发光层(alpha) 之上再叠实体层(alpha) 的合成色。"""
+    canvas = np.array(to_rgb(PALETTE["canvas"]), dtype=np.float64)
+    warm = np.array(to_rgb(PALETTE["obstacle"]), dtype=np.float64)
+    under = warm * _GLOW_ALPHA + canvas * (1.0 - _GLOW_ALPHA)
+    return warm * _OBSTACLE_ALPHA + under * (1.0 - _OBSTACLE_ALPHA)
 
 
 def test_car_and_obstacles_land_on_expected_pixels(tmp_path: Path) -> None:
@@ -108,13 +123,14 @@ def test_car_and_obstacles_land_on_expected_pixels(tmp_path: Path) -> None:
     tol = _tolerance_px(DPI)
     ax = fig.axes[0]
 
-    # 圆形障碍物：圆心像素必须是填充色
+    # 圆形障碍物：圆心像素必须是暖色填充（发光层 + 实体层叠出来的合成色）
+    fill = _obstacle_fill()
     row, col = _pixel_of(fig, ax, CIRCLE_XY)
-    assert _min_color_delta(_patch(image, row, col, tol), CIRCLE_FACE_COLOR) < 0.02
+    assert _min_color_delta(_patch(image, row, col, tol), fill) < 0.02
 
-    # 矩形障碍物：中心像素必须是填充色（矩形自身旋转 0.3 rad 不影响中心）
+    # 矩形障碍物：中心像素必须是同一套暖色（矩形自身旋转 0.3 rad 不影响中心）
     row, col = _pixel_of(fig, ax, RECT_XY)
-    assert _min_color_delta(_patch(image, row, col, tol), RECT_FACE_COLOR) < 0.02
+    assert _min_color_delta(_patch(image, row, col, tol), fill) < 0.02
 
     # 车体：取车体系 (0, 0.35 * half_width) 的点，避开中心线（车头方向短线）
     _, width = bridge.chassis.footprint()
@@ -122,15 +138,77 @@ def test_car_and_obstacles_land_on_expected_pixels(tmp_path: Path) -> None:
     world_x = CAR_XY[0] - math.sin(CAR_THETA) * offset
     world_y = CAR_XY[1] + math.cos(CAR_THETA) * offset
     row, col = _pixel_of(fig, ax, (world_x, world_y))
-    assert _min_color_delta(_patch(image, row, col, tol), CAR_FACE_COLOR) < 0.02
+    assert _min_color_delta(_patch(image, row, col, tol), PALETTE["car"]) < 0.02
 
 
-def test_lidar_ray_sampling_is_capped_at_120() -> None:
+def test_lidar_ray_sampling_is_capped_at_60() -> None:
     bridge = _make_bridge()
     scene = scene_from_bridge(bridge)
     rays = _collect_lidar_rays(bridge, scene)
     assert rays.ndim == 2
     assert rays.shape[1] == 4
-    assert 0 < rays.shape[0] <= 120
+    assert _MAX_LIDAR_RAYS == 36
+    assert 0 < rays.shape[0] <= _MAX_LIDAR_RAYS
     lengths = np.hypot(rays[:, 2] - rays[:, 0], rays[:, 3] - rays[:, 1])
     assert np.all(lengths <= scene.max_range + 1e-6)
+
+
+class _BlindBridge:
+    """只有位姿与障碍物形状的桥：激光方法存在但读不到数据。"""
+
+    chassis = None
+    world_bounds = (0.0, 10.0, 0.0, 10.0)
+    dt = 0.1
+    sim_time = 0.0
+
+    def pose(self) -> tuple[float, float, float]:
+        return (3.0, 3.0, 0.0)
+
+    def obstacle_shapes(self) -> list[dict]:
+        return [{"shape": {"name": "circle", "radius": 0.6}, "state": [6.5, 4.0, 0.0]}]
+
+    def get_lidar_front(self) -> None:
+        return None
+
+    def get_lidar_rear(self) -> None:
+        return None
+
+
+def _beam_collections(fig: object) -> int:
+    """统计 ax 上的 LineCollection 数（激光扇形是唯一用它的场景元素）。"""
+    return sum(
+        1 for item in fig.axes[0].collections if isinstance(item, LineCollection)
+    )
+
+
+def test_bridge_without_lidar_draws_no_beams() -> None:
+    """没有激光数据通路时：零光束、d_min 留空（不编数字），且照常出图。"""
+    bridge = _BlindBridge()
+    scene = scene_from_bridge(bridge)
+    rays = _collect_lidar_rays(bridge, scene)
+    assert rays.shape == (0, 4)
+    assert _bridge_telemetry(bridge, scene)["d_min"] is None
+
+    plain = _beam_collections(render_frame(bridge, dpi=DPI, show_lidar=False))
+    with_lidar = _beam_collections(render_frame(bridge, dpi=DPI, show_lidar=True))
+    assert with_lidar == plain
+
+
+def test_zoom_inset_draws_scaled_window() -> None:
+    """zoom 给正数时多出一个以车体为中心、边长 zoom 米的窗口；默认不出窗。"""
+    bridge = _make_bridge()
+    assert not render_frame(bridge, dpi=DPI).axes[0].child_axes
+
+    fig = render_frame(bridge, dpi=DPI, zoom=2.0)
+    (inset,) = fig.axes[0].child_axes
+    x0, x1 = inset.get_xlim()
+    y0, y1 = inset.get_ylim()
+    assert math.isclose(x1 - x0, 2.0)
+    assert math.isclose(y1 - y0, 2.0)
+    assert math.isclose((x0 + x1) / 2.0, CAR_XY[0])
+    assert math.isclose((y0 + y1) / 2.0, CAR_XY[1])
+    # 车体与障碍在窗口里按同一套函数重画了一遍
+    assert inset.patches or inset.collections
+
+    with pytest.raises(ValueError):
+        render_frame(bridge, dpi=DPI, zoom=0.0)

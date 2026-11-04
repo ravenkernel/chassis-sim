@@ -125,5 +125,6 @@ def save_gif(
         return directory
 
     arrays = [_load_frame(frame, imageio) for frame in frame_list]
-    imageio.mimsave(str(target), arrays, fps=fps, loop=0)
+    # imageio>=2.28 弃用了 fps 关键字（2.37 每次调用都打 DeprecationWarning），统一换算成毫秒 duration
+    imageio.mimsave(str(target), arrays, duration=round(1000.0 / fps), loop=0)
     return target

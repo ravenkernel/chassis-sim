@@ -7,6 +7,6 @@ ChassisSim-Mecanum-v0）。注册逻辑在 gym_registration.py，只依赖 gymna
 
 from . import gym_registration as _gym_registration  # noqa: F401 - 注册副作用
 
-__version__ = "0.1.4"
+__version__ = "0.2.0"
 
 __all__ = ["__version__"]

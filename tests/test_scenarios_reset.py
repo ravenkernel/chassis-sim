@@ -29,7 +29,8 @@ PLANNING_SCENES = (
     "foldback_reverse",
     "maze_grid",
 )
-OBS_DIM = 494
+# 0.2.0 起默认观测是最小集（odom+path+goal+act）= 128 维
+OBS_DIM = 128
 
 
 @pytest.mark.parametrize("name", CORE_SCENES)
@@ -147,7 +148,9 @@ def _map_key(options: dict) -> str:
     parts = [path.tobytes().hex()]
     for obstacle in options["obstacles"]:
         shape = getattr(obstacle, "shape", obstacle)
-        state = np.round(np.asarray(getattr(shape, "state", ()), dtype=float), 6).tolist()
+        state = np.round(
+            np.asarray(getattr(shape, "state", ()), dtype=float), 6
+        ).tolist()
         parts.append(f"{getattr(shape, 'name', type(shape).__name__)}{state}")
     return "|".join(parts)
 
@@ -234,4 +237,3 @@ def test_factory_does_not_retry_non_map_errors(monkeypatch) -> None:
         factory(0)
     assert calls == [0]  # 不是 MapGenerationError ⇒ 一次就抛，不重试
     assert factory.stats["attempts"] == 1 and factory.stats["failures"] == 0
-

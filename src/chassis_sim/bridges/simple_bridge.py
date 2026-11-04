@@ -34,15 +34,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
 
 from chassis_sim.chassis import Chassis
+from chassis_sim.sensors import Imu, Lidar, SensorSuite, WheelOdom
 
 from .base import SensorProvider
 from .raycast import _ray_circles_intersection, _ray_rects_intersection
-from .sensors import SensorConfig, SensorSuite
 
 
 def _linear_phase(t: float, period: float, pingpong: bool) -> float:
@@ -100,6 +101,14 @@ class SimpleBridge(SensorProvider):
         输出格式）；默认为空 = 逐位不变。**纯运动学、零随机**：第 k 步后的模拟时间
         恒为 `t = k * dt`，位置是 t 的解析函数（不累加浮点），因此同一 reset 序列
         必然给出逐位相同的轨迹。运行中换一组用 `set_dynamic_obstacles()`。
+    sensors:
+        传感器 spec 列表（`chassis_sim.sensors.Lidar` / `Imu` / `WheelOdom` 任意
+        混合、任意数量与位姿）；`None` 或空列表 = 完全关闭（不构造对象、不消耗
+        随机数、info 零新键）。几何由本桥注入（`_raycast_body_ray`），sensors 包
+        自己不碰世界；每支传感器一条按 `(sensor_seed, name)` 派生的独立随机流。
+    sensor_seed:
+        传感器随机流种子。与 `domain_rand` 用的全局 np.random **无关**：传感器
+        绝不消耗全局序列，因此开关它们不会平移 domain_rand 的噪声。
     """
 
     # ── 扫描几何常量：get_scan() 的元数据全部由它们 + max_range 推导 ──────
@@ -124,7 +133,8 @@ class SimpleBridge(SensorProvider):
         collision_margin: float = 0.03,
         boundary_margin: float = 0.05,
         dynamic_obstacles: list | None = None,
-        sensors: SensorConfig | None = None,
+        sensors: Sequence[Lidar | Imu | WheelOdom] | None = None,
+        sensor_seed: int = 0,
     ) -> None:
         self.chassis = chassis
         self.dt = float(dt)
@@ -194,13 +204,15 @@ class SimpleBridge(SensorProvider):
         self.set_dynamic_obstacles(dynamic_obstacles)
 
         # ── 可选传感器（默认全关：不构造对象、不消耗随机数、info 零新键）──────
+        # 几何注入：传感器包只给车体系 (原点, 方位角, 量程)，世界系变换与求交留在桥上。
+        self._sensor_seed = int(sensor_seed)
         self._sensors: SensorSuite | None = None
-        if sensors is not None and sensors.enabled:
+        if sensors is not None and len(sensors) > 0:
             self._sensors = SensorSuite(
                 sensors,
-                dt=self.dt,
-                fallback_track_width=float(_width),
-                lidar_mounts=(self._front_lidar, self._rear_lidar),
+                seed=self._sensor_seed,
+                raycast=self._raycast_body_ray,
+                default_track_width=float(_width),
             )
         self._sensor_reading: dict[str, Any] | None = None
 
@@ -325,6 +337,12 @@ class SimpleBridge(SensorProvider):
                 ]
             )
             self._goal_heading = float(self._theta)
+
+        # ── 首帧传感器读数（S3b）──
+        # 必须排在位姿 / 朝向 / 时间都复位之后：射线求交用的就是 _x/_y/_theta，
+        # 提前调用会拿**上一回合**的位姿算。v/vy/omega 已在上方清零，所以这一帧
+        # 是"静止于起点"的真实读数，reset 返回的观测里 lidar 段不再谎报量程外。
+        self._update_sensors()
 
     # ── 动态障碍 ────────────────────────────────────────────────────
 
@@ -566,6 +584,8 @@ class SimpleBridge(SensorProvider):
         max_range: float,
         range_min: float,
         domain_rand: bool,
+        mount: tuple[float, float] | None = None,
+        angles: np.ndarray | None = None,
     ) -> np.ndarray:
         """从前方或后方 LiDAR 安装位发射 `n_rays` 条射线。
 
@@ -585,6 +605,11 @@ class SimpleBridge(SensorProvider):
             range_min: 最小量程（米）。
             domain_rand: True 时按 `lidar_noise_std` 叠加**全局** np.random 噪声
                 （历史行为）；参数化传感器传 False —— 它有自己的独立 Generator。
+            mount: 车体系射线原点 (x, y)；给定时忽略 front 所指的安装位（安装朝向
+                已经烘进 angles），供传感器包注入的单射线调用使用。
+            angles: 世界系射线方位角（长度必须等于 n_rays）；给定时替代
+                `linspace(θ + mount_yaw - fov/2, +fov)` 的均分。两条新参同时缺省
+                时本函数的算术与缓冲区用法与加入参数化传感器前逐位相同。
 
         Returns:
             (n_rays,) float32 距离，已 clip 到 [range_min, max_range]。
@@ -592,7 +617,11 @@ class SimpleBridge(SensorProvider):
         self._ensure_lidar_buffers(n_rays)
 
         # 传感器在世界坐标系中的位姿
-        off_x, off_y, angle_off = self._front_lidar if front else self._rear_lidar
+        if mount is None:
+            off_x, off_y, angle_off = self._front_lidar if front else self._rear_lidar
+        else:
+            # 车体系原点直给：世界系变换照旧，朝向由 angles 自己带
+            off_x, off_y, angle_off = float(mount[0]), float(mount[1]), 0.0
 
         cos_t = np.cos(self._theta)
         sin_t = np.sin(self._theta)
@@ -600,10 +629,13 @@ class SimpleBridge(SensorProvider):
         sy = self._y + off_x * sin_t + off_y * cos_t
 
         # 射线方向——复用预分配的缓冲区
-        start_angle = self._theta + angle_off - 0.5 * fov
-        self._lidar_angles[:] = np.linspace(
-            start_angle, start_angle + fov, n_rays, endpoint=True
-        )
+        if angles is None:
+            start_angle = self._theta + angle_off - 0.5 * fov
+            self._lidar_angles[:] = np.linspace(
+                start_angle, start_angle + fov, n_rays, endpoint=True
+            )
+        else:
+            self._lidar_angles[:] = np.asarray(angles, dtype=np.float64)
         np.cos(self._lidar_angles, out=self._lidar_directions[:, 0])
         np.sin(self._lidar_angles, out=self._lidar_directions[:, 1])
         self._lidar_origins[:, 0] = sx
@@ -707,18 +739,54 @@ class SimpleBridge(SensorProvider):
 
         return self._lidar_distances.copy().astype(np.float32)
 
+    def _raycast_body_ray(
+        self, origin_xy: tuple[float, float], angle_rad: float, max_range: float
+    ) -> float:
+        """车体系单射线求交——注入给 `chassis_sim.sensors.SensorSuite` 的 `raycast`。
+
+        与 `_cast_rays` 共用同一份算术（圆 / 矩形 / 动态圆 / 四面墙求交 + clip）：
+        几何只有一份实现，参数化传感器与 `get_lidar_front()` 不会各自漂移。区别只在
+        把"一次 n_rays 条均分射线"换成"一条指定方位角、指定原点的射线"，因此本方法
+        每次都从头车变换出发（theta / x / y 取自当前步状态）。
+
+        Args:
+            origin_xy: 车体系射线原点 (x, y)，单位米。
+            angle_rad: 车体系方位角（车头 x 轴起、逆时针为正），单位弧度。
+            max_range: 本次求交的最大量程（米）。
+
+        Returns:
+            float：命中距离（米），已 clip 到 [RANGE_MIN, max_range]；无命中时返回
+            max_range（饱和），与 `get_lidar_front()` 的饱和语义一致。
+        """
+        angles = np.array([self._theta + float(angle_rad)], dtype=np.float64)
+        distances = self._cast_rays(
+            front=True,
+            n_rays=1,
+            fov=0.0,
+            max_range=float(max_range),
+            range_min=self.RANGE_MIN,
+            domain_rand=False,
+            mount=(float(origin_xy[0]), float(origin_xy[1])),
+            angles=angles,
+        )
+        return float(distances[0])
+
     def get_sensor_reading(self) -> dict[str, Any] | None:
-        """当前步的可选传感器读数（未启用任何传感器时为 None）。
+        """当前步的传感器读数（未启用任何传感器时为 None）。
 
-        键只包含**已启用**的项：
+        结构是 `dict[传感器名, 读数]`，键序 = 构造时传入的 spec 列表顺序，只包含
+        **已装配**的传感器（没给 spec 就没有键）：
 
-        * "imu":   {ax, ay, yaw_rate, yaw, t}
-        * "wheel": {v_left, v_right, v, t}
-        * "scan":  (n_rays,) float32，或 None（延迟预热期 / 本步丢帧）
-        * "scan_meta": 角度与有效性元数据（见 sensors.ParametricLidar.update）
+        * LiDAR:      {"scan": (n_rays,) float32 或 None, "scan_meta": {...}}
+                      scan 为 None = 延迟预热期 / 本步丢帧（见 scan_meta 的
+                      valid / dropped）；scan_meta 含 name / mount / 角度几何 /
+                      range_min / range_max / latency_steps / t / frame_t。
+        * IMU:        {"ax", "ay", "yaw_rate", "yaw", "t"}
+        * 轮速计:     {"v_left", "v_right", "v", "t"}
 
+        同名传感器不可能共存（随机流与读数都按 name 索引，构造时即报错）。
         消费方只有 env 的 info 组装：本桥从不把读数放进 obs，obs 维度保持不变。
-        返回浅拷贝，调用方改字典不会污染桥的内部状态。
+        返回浅拷贝，调用方改字典不会污染桥的内部状态（内层读数与数组仍是引用）。
         """
         return None if self._sensor_reading is None else dict(self._sensor_reading)
 
@@ -726,26 +794,15 @@ class SimpleBridge(SensorProvider):
         """推进可选传感器；未启用时是零开销空操作（不消耗任何随机数）。"""
         if self._sensors is None:
             return
-        params = self._sensors.lidar_params
-        raw_scan = None
-        if params is not None:
-            # domain_rand=False：参数化雷达的噪声来自自己的 Generator，绝不消耗
-            # 全局 np.random（否则会平移 domain_rand 的 LiDAR/里程计序列）。
-            raw_scan = self._cast_rays(
-                front=params.side == "front",
-                n_rays=int(params.n_rays),
-                fov=float(params.fov),
-                max_range=float(params.max_range),
-                range_min=float(params.range_min),
-                domain_rand=False,
-            )
+        # LiDAR 的每条射线通过构造时注入的 _raycast_body_ray 回调求交；那里一律
+        # domain_rand=False —— 传感器的噪声来自自己的 Generator，绝不消耗全局
+        # np.random（否则会平移 domain_rand 的 LiDAR/里程计序列）。
         self._sensor_reading = self._sensors.update(
             v=self._v,
             vy=self._vy,
             omega=self._omega,
             theta=self._theta,
             t=self.sim_time,
-            raw_scan=raw_scan,
         )
 
     def get_odometry(self) -> np.ndarray:
@@ -762,6 +819,41 @@ class SimpleBridge(SensorProvider):
                 0.0, self._odom_drift_theta * self.dt
             )
         return np.array([x, y, t, self._v, self._omega], dtype=np.float32)
+
+    # ── 只读快照访问器（渲染层用；不改变任何既有行为）────────────────
+
+    def pose(self) -> tuple[float, float, float]:
+        """当前真实位姿 (x, y, θ)：世界系，单位米 / 弧度（不含里程计漂移）。"""
+        return (float(self._x), float(self._y), float(self._theta))
+
+    def obstacle_shapes(self) -> list[dict[str, Any]]:
+        """静态障碍物快照，格式与 `reset(obstacles=...)` 的输入一致。
+
+        返回**新建**的 list / dict，调用方改动不会污染桥内部状态；动态障碍物
+        不在其中（它们随时间变化，需走 `dynamic_positions()`）。
+        """
+        shapes: list[dict[str, Any]] = []
+        for (cx, cy), radius in zip(self._circle_centers, self._circle_radii):
+            shapes.append(
+                {
+                    "shape": {"name": "circle", "radius": float(radius)},
+                    "state": [float(cx), float(cy), 0.0],
+                }
+            )
+        for (cx, cy), (half_l, half_w), theta in zip(
+            self._rect_centers, self._rect_half_dims, self._rect_thetas
+        ):
+            shapes.append(
+                {
+                    "shape": {
+                        "name": "rectangle",
+                        "length": float(2.0 * half_l),
+                        "width": float(2.0 * half_w),
+                    },
+                    "state": [float(cx), float(cy), float(theta)],
+                }
+            )
+        return shapes
 
     def get_path(self) -> np.ndarray:
         if len(self._path_waypoints_global) == 0:

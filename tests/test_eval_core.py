@@ -405,7 +405,11 @@ def test_evaluate_callable_returning_same_map_still_warns(capsys):
     """callable 也可能每回合返回同一张图 —— 指纹自证，照样告警。"""
     env = _MapStubEnv([("goal", 2), ("goal", 2), ("goal", 2)])
     result = evaluate(
-        env, _StubController(), n_episodes=3, max_steps=50, reset_options=lambda i: _map_for(0)
+        env,
+        _StubController(),
+        n_episodes=3,
+        max_steps=50,
+        reset_options=lambda i: _map_for(0),
     )
     err = capsys.readouterr().err
     assert "[WARN][eval]" in err and "指纹全部相同" in err
@@ -439,4 +443,3 @@ def test_eval_result_exposes_map_independence_fields():
     assert payload["distinct_maps"] == 2 and payload["maps_independent"] is True
     assert payload["map_fingerprints"] == ["aaaa", "bbbb"]
     assert payload["episodes"][0]["map_fingerprint"] == "aaaa"
-

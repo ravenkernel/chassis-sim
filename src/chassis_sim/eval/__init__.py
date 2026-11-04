@@ -752,16 +752,22 @@ def to_markdown(
     if fixed_rows:
         lines.append("")
         lines.append(
-            "⚠ **固定地图行**（" + "、".join(fixed_rows) + "）：`reset_options` 传的是固定 "
+            "⚠ **固定地图行**（"
+            + "、".join(fixed_rows)
+            + "）：`reset_options` 传的是固定 "
             "Mapping ⇒ n 个回合是**同一张地图**重放 n 次，Wilson 区间只反映这张图上的重放"
             "方差，分母不是 n 个独立样本，**不可引用**做控制器对比。要独立样本请传 "
             "`callable(episode_index)`（例 `scenario_reset_options_factory(...)`）。"
         )
-    unknown_rows = [f"{c} × {k}" for c, k, r in triples if r.n > 1 and not r.distinct_maps]
+    unknown_rows = [
+        f"{c} × {k}" for c, k, r in triples if r.n > 1 and not r.distinct_maps
+    ]
     if unknown_rows:
         lines.append("")
         lines.append(
-            "❔ **地图未知行**（" + "、".join(unknown_rows) + "）：回合没有留下地图指纹，"
+            "❔ **地图未知行**（"
+            + "、".join(unknown_rows)
+            + "）：回合没有留下地图指纹，"
             "无法自证 n 个回合是否各跑一张不同的图 ⇒ 区间同样不该按独立样本引用。"
         )
     return "\n".join(lines)

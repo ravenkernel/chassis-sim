@@ -181,7 +181,11 @@ def main() -> int:
         "max_steps": MAX_STEPS,
         "seed": SEED,
         "elapsed_s": round(elapsed, 3),
-        "map_generation": {"attempts": attempts, "retries": retries, "failures": failures},
+        "map_generation": {
+            "attempts": attempts,
+            "retries": retries,
+            "failures": failures,
+        },
         "results": [result.to_dict() for _, _, result in rows],
     }
     JSON_PATH.write_text(

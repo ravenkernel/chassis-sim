@@ -162,13 +162,16 @@ class SensorProvider(ABC):
     def get_sensor_reading(self) -> dict[str, Any] | None:
         """返回当前步的可选传感器读数（**非抽象**：不实现即视为不启用）。
 
-        读数**只进 info、绝不进 obs**：obs 的维度契约（494 / 495）与传感器
-        是否启用无关。键按传感器命名，实现方只放已启用的项：
+        读数**默认只进 info**：obs 的维度由 ObsSpec 决定（0.2.0 起默认是
+        odom+path+goal+act 的 128 维），与是否启用传感器无关；只有 obs_spec 里
+        用 lidar 段显式引用了某个传感器名，它的 scan 才会进观测。
 
-        * "imu":       {ax, ay, yaw_rate, yaw, t}
-        * "wheel":     {v_left, v_right, v, t}
-        * "scan":      (n_rays,) float32，或 None（延迟预热期 / 丢帧）
-        * "scan_meta": 参数化 LiDAR 的角度与有效性元数据
+        Returns: dict[传感器名, 读数]，每个读数本身是 dict，实现方只放已启用的项：
+
+        * Lidar:     {"scan": (n_rays,) float32 或 None（延迟预热期 / 丢帧）,
+                      "scan_meta": {name, mount, n_rays, fov, angle_min, ...}}
+        * Imu:       {ax, ay, yaw_rate, yaw, t}
+        * WheelOdom: {v_left, v_right, v, t}
 
         Returns:
             dict[str, Any]，或 None（未启用任何可选传感器；此时 env 的 info 不新增
