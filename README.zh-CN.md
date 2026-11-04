@@ -67,9 +67,9 @@ pip install -e ".[dev]"
 只给 GIF 导出用，两者都在 `viz` 里 —— `cs.record()`、`cs.snapshot()` 和
 `examples/gallery.py` 依赖的就是它。
 
-1.0.0 只内置一个仿真后端：纯 NumPy 的 `SimpleBridge`。不需要任何外部仿真器，也
-没有 `irsim` extra：ir-sim 与 ROS 2 后端不在本包里（它们留在上游训练仓库）。
-`PhysicalCommandBridge` 是给这类后端预留的接缝。
+1.0.0 只内置一个仿真后端：纯 NumPy 的 `SimpleBridge`。不需要任何外部仿真器，也没
+有对应的 optional extra：ROS 2 / Gazebo 一类后端不在本包范围内。
+`PhysicalCommandBridge` 是把自己的物理引擎接进同一套观测/奖励流水线的正式接缝。
 
 ## 快速开始
 
@@ -293,7 +293,7 @@ obs: (494,)
 
 ### 物理指令桥接
 
-第三方仿真器（ir-sim、ROS/Gazebo、主仓库的 `NumpySimBridge`）吃的是**物理**指令，
+第三方物理后端（ROS 2、Gazebo，或你自己的积分器）吃的是**物理**指令，
 不是归一化动作。`PhysicalCommandBridge` 用 `chassis.physical_action()` 做映射（绝不
 自己调 `step()` —— 执行器滞后归后端所有），传感器原样转发。物理向量顺序就是底盘自己
 的顺序：
@@ -584,6 +584,13 @@ python -m chassis_sim eval --scenario dense_static --controller pp --episodes 5
 `record` 与 `render` 是需要 `viz` extra 的两个子命令。缺 `matplotlib` 或 `imageio`
 时它们以**退出码 2** 结束，并打印一行中文提示（指向 `pip install "chassis-sim[viz]"`），
 不是 traceback。
+
+默认 `--scenario` 是 `corridor`，既不需要 `viz` 也不需要 `planning`，所以 `eval` 与
+`record` 在最小安装下开箱可用。需要 `planning` extra 的场景（`obstacles_dense` 等）要
+显式指定；缺 `numba` 时它们同样以**退出码 2** 结束，提示指向
+`pip install "chassis-sim[planning]"`。核心场景的地图由各自 YAML 固定，因此对它跑
+`eval` 会打印 `[WARN][eval] … 地图指纹全部相同` 并标 `固定地图`；要每回合重掷独立
+地图，请用 `planning` 场景。
 
 ## 配置
 

@@ -14,7 +14,14 @@
 `record`/`render`（matplotlib + imageio）与 `eval` 全部在**函数体内**导入，于是
 `import chassis_sim.cli` 与 `python -m chassis_sim --help` 都不拉重模块；缺可视化
 依赖时只打印一条中文提示（含 `pip install "chassis-sim[viz]"`）并 exit 2，不吐
-traceback。
+traceback。缺 planning extra（numba）时同样只有一条提示，但**只**提 planning
+extra：两条提示各管各的，不互相串味。
+
+默认场景
+--------
+`--scenario` 的默认值必须是 planning-free 的（不需要 numba）：只装 core
+（`pip install chassis-sim`）的用户开箱跑 `chassis-sim eval` 得能成功。
+`obstacles_dense` 这类 `requires: planning` 的场景只能显式 `--scenario` 指定。
 
 退出码
 ------
@@ -41,7 +48,9 @@ _VIZ_MODULES: tuple[str, ...] = ("matplotlib", "imageio")
 _CONTROLLERS: tuple[str, ...] = ("pp", "dwa")
 _EXIT_OK = 0
 _EXIT_USAGE = 2
-_DEFAULT_SCENARIO = "obstacles_dense"
+#: 默认场景必须 planning-free（不需要 numba）：core 安装里 `eval` 要开箱可跑，
+#: 而 `obstacles_dense` 这类场景 requires: planning，只能显式 --scenario 指定。
+_DEFAULT_SCENARIO = "corridor"
 #: record 的安全默认：省略 --steps/--every 时最多约 50 帧（env.max_steps 是 1000，
 #: 每步一帧会渲染 1000 张 600px PNG —— 几分钟、几十 MB，不是能给的默认值）。
 _DEFAULT_STEPS = 200
@@ -149,6 +158,8 @@ def _cmd_record(args: argparse.Namespace) -> int:
 
 
 def _cmd_eval(args: argparse.Namespace) -> int:
+    # 刻意**不**调 _require_viz：eval 只跑仿真 + 打印 Markdown，与 matplotlib /
+    # imageio 无关（viz 只属于 record / render）。
     scenario = _check_scenario(args.scenario)
     env = _make_env(scenario, args.seed)
     try:
@@ -297,8 +308,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[chassis-sim] 错误：{exc}", file=sys.stderr)
         return _EXIT_USAGE
     except ImportError as exc:  # 兜底：任何延迟导入缺依赖都只给一行提示
-        print(
-            f"[chassis-sim] 缺少依赖：{exc}\n  安装可视化依赖：{_VIZ_HINT}",
-            file=sys.stderr,
-        )
+        # 自带安装提示的 ImportError（例如 planning 缺 numba）原样透出：再补一行
+        # viz 提示会把"去装 matplotlib"写进一条 numba 的错里，方向就错了。
+        hint = "" if "pip install" in str(exc) else f"\n  安装可视化依赖：{_VIZ_HINT}"
+        print(f"[chassis-sim] 缺少依赖：{exc}{hint}", file=sys.stderr)
         return _EXIT_USAGE

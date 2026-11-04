@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import importlib
 import shutil
 import tempfile
 from collections.abc import Mapping
@@ -26,6 +27,8 @@ from .eval import controller_observation
 __all__ = ["RecordingResult", "record", "snapshot"]
 
 _VIZ_HINT = 'pip install "chassis-sim[viz]"'
+#: 可视化依赖的导入点（顺序即消息里的顺序）；缺哪个就报哪个，缺几个报几个
+_VIZ_MODULES: tuple[str, ...] = ("matplotlib", "imageio.v2")
 
 
 @dataclass(frozen=True)
@@ -50,17 +53,21 @@ class RecordingResult:
 
 
 def _require_viz(who: str) -> None:
-    """提前确认可视化依赖可用（两个 import 都发生在函数体内）。"""
-    try:
-        import matplotlib  # noqa: F401
-    except ImportError as exc:
+    """提前确认可视化依赖可用（两个 import 都发生在函数体内）。
+
+    缺几个就一次报几个：只报第一个命中的模块，在"core 安装（matplotlib 与
+    imageio 都没有）"下会漏掉另一半，用户按提示装完再撞第二次。
+    """
+    missing: list[str] = []
+    for name in _VIZ_MODULES:
+        try:
+            importlib.import_module(name)
+        except ImportError:
+            missing.append(name.split(".")[0])
+    if missing:
         raise ImportError(
-            f"{who} 需要 matplotlib；安装可视化依赖：{_VIZ_HINT}"
-        ) from exc
-    try:
-        import imageio.v2  # noqa: F401
-    except ImportError as exc:
-        raise ImportError(f"{who} 需要 imageio；安装可视化依赖：{_VIZ_HINT}") from exc
+            f"{who} 需要 {'、'.join(missing)}；安装可视化依赖：{_VIZ_HINT}"
+        )
 
 
 def _bridge_of(target: Any) -> Any:

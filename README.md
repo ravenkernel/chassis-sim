@@ -75,9 +75,9 @@ needed only for rendering and `imageio` only for GIF export; both come with the 
 extra, which is what `cs.record()`, `cs.snapshot()` and `examples/gallery.py` need.
 
 The 1.0.0 line ships exactly one built-in simulator: the pure-NumPy `SimpleBridge`.
-No external simulator is required, and there is no `irsim` extra: the ir-sim and ROS 2
-backends are not part of this package (they remain in the upstream training
-repository). `PhysicalCommandBridge` is the documented seam for such a backend.
+No external simulator is required, and there is no optional extra for one: ROS 2 and
+Gazebo style backends are out of scope. `PhysicalCommandBridge` is the documented seam
+for plugging your own physics engine into the same observation/reward pipeline.
 
 ## Quickstart
 
@@ -319,7 +319,7 @@ Segment order is the constructor order, so the slice table above is the contract
 
 ### Physical-command bridges
 
-A third-party simulator (ir-sim, ROS/Gazebo, the main repo's `NumpySimBridge`) takes
+A third-party physics backend (ROS 2, Gazebo, or your own integrator) takes
 **physical** commands, not a normalized action. `PhysicalCommandBridge` maps with
 `chassis.physical_action()` (never `step()` — the backend owns its own steering lag)
 and forwards sensors untouched. The vector order is the chassis's own:
@@ -635,6 +635,14 @@ that predates it needs one `pip install -e ".[dev]"` before `chassis-sim` is on 
 `record` and `render` are the two subcommands that need the `viz` extra. When
 `matplotlib` or `imageio` is missing they exit with status **2** and a one-line
 Chinese hint naming `pip install "chassis-sim[viz]"` — not a traceback.
+
+The default `--scenario` is `corridor`, which needs neither `viz` nor `planning`, so
+`eval` and `record` work on a minimal install. Scenarios that need the `planning`
+extra (`obstacles_dense` and friends) must be requested explicitly and exit **2** with a
+hint naming `pip install "chassis-sim[planning]"` when `numba` is missing. One
+consequence of the planning-free default: a core scenario is a fixed map from its YAML,
+so `eval` over it prints `[WARN][eval] ... identical map fingerprint` and marks the row
+`fixed map`; for per-episode re-rolled maps use a `planning` scenario.
 
 ## Configuration
 

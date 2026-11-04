@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -44,14 +45,21 @@ def test_list_scenarios_returns_zero_and_prints_names(
 
 
 def test_eval_runs_one_episode_and_prints_markdown(
-    capsys: pytest.CaptureFixture[str],
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """eval 成功路径：--episodes 1 足矣（5 回合的默认值只是默认值）。"""
-    assert main(["eval", "--episodes", "1"]) == 0
+    """eval 成功路径：--episodes 1 足矣（5 回合的默认值只是默认值）。
 
-    out = capsys.readouterr().out
-    assert "| controller |" in out
-    assert "PurePursuitController" in out
+    同时屏蔽 numba：只装 core 的用户没有 planning extra，默认场景一旦是
+    `requires: planning` 的（曾经就是 obstacles_dense）这里就会 exit 2 ——
+    于是"core 安装跑得动 eval"这条约束在装了 numba 的环境里也一样守着。
+    """
+    monkeypatch.setitem(sys.modules, "numba", None)
+
+    code = main(["eval", "--episodes", "1"])
+    captured = capsys.readouterr()
+    assert code == 0, captured.err
+    assert "| controller |" in captured.out
+    assert "PurePursuitController" in captured.out
 
 
 def test_render_writes_a_real_png(

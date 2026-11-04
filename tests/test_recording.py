@@ -6,6 +6,7 @@ env 本体在 chassis_sim.envs（模块级 import 会让本文件被别人的重
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import subprocess
 import sys
@@ -157,9 +158,17 @@ def test_record_rejects_bad_every_and_fps(tmp_path: Path) -> None:
 def test_record_without_imageio_raises_with_pip_hint(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """缺 imageio 必须抛 ImportError（不许静默降级成帧目录），消息带 pip 提示。"""
+    """缺 imageio 必须抛 ImportError（不许静默降级成帧目录），消息带 pip 提示。
+
+    core 安装（matplotlib 与 imageio 都没有）下同样要成立，所以断言的是"消息里
+    点名的模块 == 真实缺失的模块"：写死 `imageio` 在缺 matplotlib 的环境里会
+    先命中 matplotlib 而误报失败。
+    """
     monkeypatch.setitem(sys.modules, "imageio", None)
     monkeypatch.setitem(sys.modules, "imageio.v2", None)
+    missing = {"imageio"}
+    if importlib.util.find_spec("matplotlib") is None:
+        missing.add("matplotlib")
 
     env = _env(max_steps=2)
     try:
@@ -169,7 +178,7 @@ def test_record_without_imageio_raises_with_pip_hint(
         env.close()
 
     message = str(excinfo.value)
-    assert "imageio" in message
+    assert {name for name in ("matplotlib", "imageio") if name in message} == missing
     assert 'pip install "chassis-sim[viz]"' in message
     assert not (tmp_path / "x.gif").exists()
 
