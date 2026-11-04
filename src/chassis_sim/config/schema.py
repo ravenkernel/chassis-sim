@@ -141,7 +141,20 @@ class EnvConfig:
     extrapolate_path: bool = True
     path_fill_mode: str = "extrapolate"
     path_lookahead_floor: float = 1.0
-    sensor_seed: int = 0
+    # ── 随机种子（1.1.0 D）───────────────────────────────────────────────
+    # seed:        本次**运行**种子。给了它，env 自造桥的域随机化噪声（LiDAR 加性
+    #              高斯噪声 + 里程计随机游走漂移）走桥自持的
+    #              np.random.default_rng(seed) ⇒ 同 seed 逐位可复现。
+    #              None（默认）= 桥不动全局 np.random，即 1.0.x 的既有行为，
+    #              数值逐位不变。
+    # sensor_seed: 传感器随机流种子；None = 跟随 seed（见 resolve_sensor_seed）。
+    #     推导规则（唯一实现 resolve_sensor_seed()，api.make 与 env 共用）：
+    #         sensor_seed if sensor_seed is not None
+    #         else (seed if seed is not None else 0)
+    #     因此只给 seed 时传感器流与 1.0.x 的 sensor_seed=同值 逐位相同；两者都
+    #     没给 ⇒ 0，仍是 1.0.x 的默认值。
+    sensor_seed: int | None = None
+    seed: int | None = None
     world_bounds: tuple[float, float, float, float] | None = None
 
     def __post_init__(self) -> None:
@@ -927,6 +940,23 @@ def _resolve(kwarg: Any, cfg_value: Any, default: Any = _UNSET) -> Any:
     if cfg_value is not None:
         return cfg_value
     return default
+
+
+def resolve_sensor_seed(sensor_seed: int | None, seed: int | None) -> int:
+    """传感器随机流种子的**唯一**推导点（api.make 与 ChassisSimEnv 共用）。
+
+    规则：sensor_seed 显式给出就用它；否则跟随运行种子 seed；两者都没有就退回 0。
+    于是 cs.make(seed=3) 的传感器流与 1.0.x 的 cs.make(sensor_seed=3) 在这里汇合
+    成同一个整数种子 ⇒ 逐位相同。
+
+    这**不**意味着 seed 与 sensor_seed 等价：seed 还额外给域随机化噪声（桥自持的
+    Generator）用种，而 sensor_seed 只管传感器随机流；两者同时给出时各管各的。
+    """
+    if sensor_seed is not None:
+        return int(sensor_seed)
+    if seed is not None:
+        return int(seed)
+    return 0
 
 
 # ── YAML 快照：观测段 / 传感器的可重建描述 ────────────────────────────

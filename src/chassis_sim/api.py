@@ -15,16 +15,25 @@ chassis_sim.config.schema._resolve() 解析 —— 与 ChassisSimEnv.__init__ �
     env = cs.make(cfg, v_max=0.4)                 # kwargs 再覆盖
 
 scenario= 只读调用 chassis_sim.scenarios.load_scenario()，把场景翻译成
-reset(options=...) 的键挂在 env.default_reset_options 上。env.reset() 不会
-自动读它（1.0.0 W1 保持既有 reset 语义不变），要显式传：
+reset(options=...) 的键挂在 env.default_reset_options 上。1.1.0 起 env.reset()
+在 options=None 时会**自动消费**它，因此场景默认就生效：
 
-    env.reset(seed=0, options=env.default_reset_options)
+    env.reset(seed=0)              # 用 env.default_reset_options
+    env.reset(seed=0, options={})  # 显式给 options ⇒ 一律以你为准
 
-场景名写错时 load_scenario 的 ScenarioNotFoundError 原样抛出，不静默忽略。
+优先级只有一条：options 显式给出（含空 dict {}）一律以调用方为准；None 时才回落
+到 env.default_reset_options（非空时）。场景名写错时 load_scenario 的
+ScenarioNotFoundError 原样抛出，不静默忽略。
 
 domain_rand 是三层解析：显式 kwargs > EnvConfig.domain_rand_enabled > 库默认
 False（见 ChassisSimEnv 的同名形参）。库默认**确定性**：不加噪才是默认，
 要域随机化必须显式打开（cfg 字段或 kwargs 任一处即可）。
+
+seed 是**运行**种子（1.1.0 D）：env 自造桥时下发给 SimpleBridge(seed=...)，
+域随机化噪声因此走桥自持的 Generator ⇒ 同 seed 逐位可复现；seed=None（默认）
+仍吃全局 np.random，即 1.0.x 的既有行为、数值逐位不变。sensor_seed 只给传感器
+随机流用种，未指定时跟随 seed（规则见 config.schema.resolve_sensor_seed）⇒
+make(seed=3) 的传感器流与 1.0.x 的 make(sensor_seed=3) 逐位相同。
 """
 
 from __future__ import annotations
@@ -33,7 +42,7 @@ import dataclasses
 from typing import Any
 
 from chassis_sim.config import EnvConfig
-from chassis_sim.config.schema import _resolve
+from chassis_sim.config.schema import _resolve, resolve_sensor_seed
 from chassis_sim.envs import ChassisSimEnv
 from chassis_sim.scenarios import load_scenario, scenario_to_reset_options
 
@@ -49,6 +58,7 @@ _ENV_PARAM_FIELDS = (
     "path_lookahead",
     "max_path_points",
     "sensor_seed",
+    "seed",
     "path_power",
     "extrapolate_path",
     "path_fill_mode",
@@ -70,8 +80,10 @@ _EXTRA_ENV_ARGS = (
     "strict_reward_kwargs",
     "reward_cfg",
 )
-# 别名 -> 正名（obs= 是 obs_spec= 的别名，seed= 是 sensor_seed= 的别名）
-_ALIASES = {"obs": "obs_spec", "seed": "sensor_seed"}
+# 别名 -> 正名：obs= 是 obs_spec= 的别名。seed 自 1.1.0 起是 EnvConfig 的**正名**
+# 字段（运行种子），不再转投 sensor_seed，故这里是自映射（_check_alias 永不触发）
+# —— 保留词条只为让 _ALLOWED 与"可用键"提示里仍有 seed 这个词条。
+_ALIASES = {"obs": "obs_spec", "seed": "seed"}
 
 
 def _field_default(f: dataclasses.Field) -> Any:
@@ -119,7 +131,10 @@ def make(
             EnvConfig 实例。给 str 时等价于 EnvConfig(chassis=该名)。
         scenario: 场景名或 YAML 路径（chassis_sim.scenarios.load_scenario 的
             入参）。非 None 时翻译成 env.default_reset_options。
-        seed: sensor_seed 的别名，同时作为场景动态障碍的种子。
+        seed: 运行种子（EnvConfig.seed）。env 自造桥时下发给 SimpleBridge，
+            域随机化噪声因此可复现；同时是 sensor_seed 未指定时的传感器流
+            种子来源（config.schema.resolve_sensor_seed），也是场景地图种子。
+            与 sensor_seed= 同时给出是合法的（两者各管各的），不再报冲突。
         sensors: 传感器 spec 序列（Lidar / Imu / WheelOdom 实例），
             等价于 sensors= 覆盖；只在 env 自造桥时生效。
         obs: obs_spec 的别名（ObsSpec 实例）。
@@ -129,7 +144,8 @@ def make(
 
     Returns:
         构造好的 ChassisSimEnv；若给了 scenario，还带 scenario 属性与
-        default_reset_options（dict）。
+        default_reset_options（dict）—— env.reset() 在 options=None 时会自动
+        消费它，显式 options（含 {}）仍然覆盖。
 
     Raises:
         TypeError: 第一个参数既不是 str 也不是 EnvConfig。
@@ -158,8 +174,9 @@ def make(
         _check_alias("obs", "obs_spec", overrides)
         overrides["obs_spec"] = obs
     if seed is not None:
-        _check_alias("seed", "sensor_seed", overrides)
-        overrides["sensor_seed"] = seed
+        # seed 是正名字段（运行种子），不再转投 sensor_seed ⇒ 与 sensor_seed=
+        # 同时给出是两条独立输入，不是别名冲突。
+        overrides["seed"] = seed
     if sensors is not None:
         overrides["sensors"] = sensors
 
@@ -192,13 +209,21 @@ def make(
 
     env = ChassisSimEnv(cfg=cfg, **env_kwargs)
 
-    # 场景：只读加载并翻译成 reset(options=...) 的键（reset 语义不变）
+    # 场景：只读加载并翻译成 reset(options=...) 的键。1.1.0 起 env.reset() 在
+    # options=None 时自动消费它（显式 options 一律以调用方为准），因此
+    # make(scenario=...) 造出来的 env 直接 reset() 场景就生效。
     env.scenario = None
     env.default_reset_options = {}
     if scenario_name is not None:
         scenario_obj = load_scenario(scenario_name)
         env.scenario = scenario_obj
+        # 地图种子 = **推导后**的传感器种子（sensor_seed 优先，否则跟随 seed，
+        # 都没有则 0）：与 1.0.x 的 int(sensor_seed) 在"只给 seed"与"只给
+        # sensor_seed"两种写法下逐位相同。
         env.default_reset_options = scenario_to_reset_options(
-            scenario_obj, seed=int(env_kwargs.get("sensor_seed", 0))
+            scenario_obj,
+            seed=resolve_sensor_seed(
+                env_kwargs.get("sensor_seed"), env_kwargs.get("seed")
+            ),
         )
     return env

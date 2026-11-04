@@ -40,7 +40,7 @@ from gymnasium import spaces
 from chassis_sim.bridges import SensorProvider, SimpleBridge
 from chassis_sim.chassis import Chassis, make_chassis
 from chassis_sim.config import EnvConfig, RewardConfig
-from chassis_sim.config.schema import _resolve
+from chassis_sim.config.schema import _resolve, resolve_sensor_seed
 from chassis_sim.obs import ObsSpec
 from chassis_sim.obs.context import ContextBuilder
 from chassis_sim.paths import gear_is_compliant, segment_is_reverse
@@ -232,6 +232,18 @@ class ChassisSimEnv(gym.Env):
     决定观测怎么拼（None ⇒ ObsSpec.default()，即
     odom+path+goal+act 的 128 维最小集；v0.1.4 的 494 维要显式传 9 段 ObsSpec，
     其中 lidar 段引用已装配的两支 Lidar 传感器名）。
+
+    两个种子形参（1.1.0 D）分工不同：seed= 是**运行**种子，env 自造桥时传给
+    SimpleBridge(seed=...)，域随机化噪声（LiDAR 加性噪声 + 里程计漂移）因此走桥
+    自持的 np.random.default_rng(seed) ⇒ 同 seed 逐位可复现；sensor_seed= 只管
+    传感器随机流，None ⇒ 跟随 seed，两者都没有 ⇒ 0（推导规则见
+    config.schema.resolve_sensor_seed）。seed=None（默认）时域随机化仍吃全局
+    np.random，即 1.0.x 的既有行为、数值逐位不变。
+
+    **注入桥时不接管随机源**：env 只把 seed 传给**自己造的** SimpleBridge；
+    bridge= 注入的桥的随机性由桥自己负责（它自己的 seed=、或它自己的全局状态），
+    env 既不读也不写它的 Generator / np.random —— 否则同一个桥被两个 env 共用时
+    会互相打乱随机流。sensors= 与 bridge= 互斥，注入桥上也没有任何种子可传。
     """
 
     metadata: ClassVar[dict[str, list[str]]] = {"render_modes": ["human"]}
@@ -267,6 +279,7 @@ class ChassisSimEnv(gym.Env):
         max_path_points: int | None = None,
         obs_spec: ObsSpec | None = None,
         sensor_seed: int | None = None,
+        seed: int | None = None,
         path_power: float | None = None,
         extrapolate_path: bool | None = None,
         path_fill_mode: str | None = None,
@@ -408,6 +421,17 @@ class ChassisSimEnv(gym.Env):
         # 每个 lidar 名最后一次**有效**扫描（S3b 零阶保持）：丢帧 / latency 预热
         # 期用它顶上，绝不谎报"四周空旷"。只存真实读数，reset 时清空。
         self._lidar_last_scan: dict[str, np.ndarray] = {}
+        # ── 随机种子解析（1.1.0 D）───────────────────────────────────────
+        # seed         = 运行种子：域随机化噪声（LiDAR 加性噪声 + 里程计漂移）的
+        #                随机源，非 None 时由 env 自造的桥自持一条 Generator。
+        # sensor_seed  = 传感器随机流种子，None ⇒ 跟随 seed（唯一推导点见
+        #                config.schema.resolve_sensor_seed），两者都没有 ⇒ 0。
+        # 两者都走既有的三层解析（kwargs > EnvConfig 字段 > 库默认）。
+        _seed = _resolve(seed, _ec.seed, None)
+        self.seed: int | None = None if _seed is None else int(_seed)
+        self.sensor_seed: int = resolve_sensor_seed(
+            _resolve(sensor_seed, _ec.sensor_seed, None), self.seed
+        )
         if bridge is None:
             _wbounds = _resolve(world_bounds, _ec.world_bounds, _DEFAULT_WORLD_BOUNDS)
             bridge = SimpleBridge(
@@ -416,6 +440,9 @@ class ChassisSimEnv(gym.Env):
                 world_bounds=tuple(float(_x) for _x in _wbounds),
                 max_range=float(_ec.lidar_max_range),
                 domain_rand=bool(domain_rand),
+                # 只有 env 自造的桥才拿到 seed；注入桥的随机性由桥自己负责（见
+                # 类 docstring）—— 这里绝不改别人的 np.random 或 Generator。
+                seed=self.seed,
                 lidar_noise_std=float(_ec.lidar_noise_std),
                 odom_drift_xy=float(_ec.odom_drift_xy),
                 odom_drift_theta=float(_ec.odom_drift_theta),
@@ -423,7 +450,7 @@ class ChassisSimEnv(gym.Env):
                 goal_end_wp_count=int(_ec.goal_end_wp_count),
                 goal_end_wp_margin=int(_ec.goal_end_wp_margin),
                 sensors=sensors,
-                sensor_seed=int(_resolve(sensor_seed, _ec.sensor_seed, 0)),
+                sensor_seed=self.sensor_seed,
             )
         elif sensors is not None:
             # sensors= 与注入 bridge= **互斥**（这里选择抛错而不是"事后转交"）：
@@ -687,6 +714,17 @@ class ChassisSimEnv(gym.Env):
         return -1
 
     def reset(self, seed=None, options=None):
+        """重置环境；options 的优先级只有一条规则（1.1.0 E）。
+
+        options 显式给出（含空 dict `{}`）⇒ **一律以调用方为准**；options 为 None
+        且 self.default_reset_options 非空 ⇒ 自动用它；否则按既有的内建场景
+        （map_generator / 直线兜底）走。因此 cs.make(scenario=...) 造出来的 env
+        直接 reset() 就生效，而显式 options 仍然覆盖它（不会被默认值掺入）。
+        """
+        if options is None:
+            _defaults = getattr(self, "default_reset_options", None)
+            if _defaults:
+                options = _defaults
         try:
             return self._reset_impl(seed=seed, options=options)
         except Exception:

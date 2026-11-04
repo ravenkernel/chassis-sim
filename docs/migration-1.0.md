@@ -249,7 +249,7 @@ env = cs.make("ackermann", max_steps=500, sensors=[cs.Lidar("front", n_rays=180)
 `cs.make()` 的第一个参数 positional-only，只接受车型名或 `EnvConfig` 实例；
 `cs.make("diff_drive", cfg)` 这种两个位置参数的写法是 `TypeError`，要写成
 `cs.make(cfg, ...)`。`make()` 的优先级固定为 **kwargs > cfg 字段 > 库默认**，
-`scenario=` 只把场景翻译进 `env.default_reset_options`，**不会**自动 `reset()`。
+`scenario=` 把场景翻译进 `env.default_reset_options`；**1.1.0 起 `reset()` 会自动消费它**（显式 `options=` 仍然优先 —— 1.0.x 里必须手动传 options 的写法从此可以省掉）。
 
 ## 8. 默认行为差异：默认环境不再装雷达
 

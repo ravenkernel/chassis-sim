@@ -594,7 +594,7 @@ python -m chassis_sim eval --scenario dense_static --controller pp --episodes 5
 
 ## 配置
 
-`EnvConfig` 是带 44 个字段的 dataclass，也是所有旋钮的唯一事实源：底盘、动力学、动作
+`EnvConfig` 是带 45 个字段的 dataclass，也是所有旋钮的唯一事实源：底盘、动力学、动作
 限值、观测、传感器、reward 分量、域随机化、世界边界。`cs.make(cfg, **kwargs)` 对每个
 字段按 **kwargs > cfg 字段 > 库默认** 解析，`EnvConfig.to_yaml()` / `from_yaml()`
 对整份配置做往返，因此一次实验靠一个快照文件就能复现。
@@ -609,6 +609,10 @@ print("domain_rand_enabled:", cfg.domain_rand_enabled)
 path = cfg.to_yaml("/tmp/run.yaml")
 print("snapshot:", path.name, "->", path.read_text().splitlines()[0])
 print("roundtrip:", cs.EnvConfig.from_yaml(path) == cfg)
+
+cfg_seeded = cs.EnvConfig(seed=3)
+print("seed:", cfg_seeded.seed, "| sensor_seed field:", cfg_seeded.sensor_seed)
+print("derived sensor_seed:", cs.make(cfg_seeded).sensor_seed)
 
 env = cs.make(cfg, v_max=0.8)
 print("kwargs > cfg:", env.unwrapped.chassis.v_max, "(cfg:", cfg.v_max, ")")
@@ -626,10 +630,12 @@ print(
 ```
 
 ```text
-fields: 44
+fields: 45
 domain_rand_enabled: False
 snapshot: run.yaml -> delta_max: 0.526
 roundtrip: True
+seed: 3 | sensor_seed field: None
+derived sensor_seed: 3
 kwargs > cfg: 0.8 (cfg: 1.2 )
 cfg carries max_steps: 500
 domain_rand: library default False | cfg True | kwargs False
@@ -637,8 +643,22 @@ domain_rand: library default False | cfg True | kwargs False
 
 `EnvConfig.domain_rand_enabled` 默认是 **False**：不加噪才是库默认，要域随机化得自己
 显式打开。解析分三层 —— `cs.make(domain_rand=True)` 压过 `cfg.domain_rand_enabled`，
-后者压过库默认的 `False`。`to_yaml()` 写全 44 个字段，所以 `from_yaml()` 还原出
+后者压过库默认的 `False`。`to_yaml()` 写全 45 个字段，所以 `from_yaml()` 还原出
 完全相同的配置，快照与来源对象比较相等。
+
+`EnvConfig.seed` 是**运行种子**，默认 `None`。给了它就下发给 env 自己造的桥，域随机化
+噪声（LiDAR 加性噪声 + 里程计漂移）因此走桥自持的 `np.random.default_rng(seed)`：
+同 seed 的两次运行逐位相同，且不动全局 `np.random`。`seed=None` 时这两路噪声仍旧与
+1.0.x 一样吃全局 `np.random`，数值逐位不变。`EnvConfig.sensor_seed` 默认同样是
+`None`，只管传感器随机流；推导规则只有一处实现（`config.schema.resolve_sensor_seed`）：
+
+```text
+sensor_seed if sensor_seed is not None else (seed if seed is not None else 0)
+```
+
+所以 `cs.make(seed=3)` 的传感器读数与 1.0.x 的 `cs.make(sensor_seed=3)` 逐位相同，
+而 `cs.make(seed=3, sensor_seed=5)` 用 3 给域随机化随机流、5 给传感器随机流 ——
+两者是独立输入，不是别名。
 
 ## 从 0.2.x 迁移
 
@@ -666,9 +686,12 @@ Reeds-Shepp 规划，声明了 `requires: planning`。
 | `foldback_reverse` | `planning` | 0 | 0 | 反向折返，过 cusp 过滤 |
 | `maze_grid` | `planning` | 1 | 0 | 网格迷宫（YAML seed 1） |
 
-`cs.make(scenario=...)` 会加载场景并翻译成 reset options，但它**不会**替你调
-`reset()`：这些键落在 `env.default_reset_options` 里，要你自己交给 `reset()`。没有
-任何隐式生效，场景名写错时 `ScenarioNotFoundError` 原样抛出，不静默忽略。
+`cs.make(scenario=...)` 会加载场景并翻译成 reset options，存进
+`env.default_reset_options`。1.1.0 起 `reset()` 在你不传 `options` 时会**自动消费**
+这份默认值 —— 场景不再静默失效，也不用每次记得带。优先级只有一句：你显式给出的
+options（含空 dict `{}`）一律原样使用，只有 `options=None` 才回落到
+`env.default_reset_options`。场景名写错时 `ScenarioNotFoundError` 原样抛出，
+不静默忽略。
 
 ```python
 import chassis_sim as cs
@@ -677,7 +700,7 @@ env = cs.make("ackermann", scenario="corridor", max_steps=100)
 print("scenario:", env.scenario.name, "requires:", env.scenario.requires)
 print("reset option keys:", sorted(env.default_reset_options))
 
-obs, info = env.reset(seed=0, options=env.default_reset_options)
+obs, info = env.reset(seed=0)  # options default to env.default_reset_options
 print(
     "obs:",
     obs.shape,

@@ -127,11 +127,17 @@ class TestOverrideValidation:
         with pytest.raises(ValueError, match="别名"):
             cs.make("ackermann", obs=spec, obs_spec=spec)
 
-    def test_seed_alias_conflict_raises(self):
-        with pytest.raises(ValueError, match="别名"):
-            cs.make("ackermann", seed=1, sensor_seed=2)
+    def test_seed_and_sensor_seed_are_independent_inputs(self):
+        """1.1.0 D：seed 不再是 sensor_seed 的别名，两者各管各的、不冲突。
 
-    def test_seed_alias_feeds_the_sensor_rng(self):
+        seed=1 是运行种子（域随机化噪声用种），sensor_seed=2 是传感器随机流种子；
+        同时给出是合法组合（旧断言要求抛别名冲突，那正是本波修掉的语义）。
+        """
+        env = cs.make("ackermann", seed=1, sensor_seed=2)
+        assert (env.seed, env.sensor_seed) == (1, 2)
+
+    def test_seed_feeds_the_sensor_rng_when_sensor_seed_is_absent(self):
+        """只给 seed ⇒ 传感器流等价于 1.0.x 的 sensor_seed=同值（逐位相同）。"""
         spec = ObsSpec(
             (
                 Odom(),
@@ -149,6 +155,9 @@ class TestOverrideValidation:
         obs_other = other.reset(seed=0)[0]
         assert np.array_equal(obs_same, obs_explicit)
         assert not np.array_equal(obs_same, obs_other)
+        # 两者同时给出 ⇒ 传感器流由 sensor_seed 决定，seed 只管域随机化噪声
+        both = cs.make("ackermann", seed=8, sensor_seed=7, sensors=sensors, obs=spec)
+        assert np.array_equal(both.reset(seed=0)[0], obs_explicit)
 
 
 class TestEmitRewardComponents:

@@ -646,7 +646,7 @@ so `eval` over it prints `[WARN][eval] ... identical map fingerprint` and marks 
 
 ## Configuration
 
-`EnvConfig` is a dataclass with 44 fields and the single source of truth for every
+`EnvConfig` is a dataclass with 45 fields and the single source of truth for every
 knob: chassis, dynamics, action limits, observation, sensors, reward components,
 domain randomization, world bounds. `cs.make(cfg, **kwargs)` resolves each field as
 **kwargs > cfg field > library default**, and `EnvConfig.to_yaml()` /
@@ -664,6 +664,10 @@ path = cfg.to_yaml("/tmp/run.yaml")
 print("snapshot:", path.name, "->", path.read_text().splitlines()[0])
 print("roundtrip:", cs.EnvConfig.from_yaml(path) == cfg)
 
+cfg_seeded = cs.EnvConfig(seed=3)
+print("seed:", cfg_seeded.seed, "| sensor_seed field:", cfg_seeded.sensor_seed)
+print("derived sensor_seed:", cs.make(cfg_seeded).sensor_seed)
+
 env = cs.make(cfg, v_max=0.8)
 print("kwargs > cfg:", env.unwrapped.chassis.v_max, "(cfg:", cfg.v_max, ")")
 print("cfg carries max_steps:", env.max_steps)
@@ -680,10 +684,12 @@ print(
 ```
 
 ```text
-fields: 44
+fields: 45
 domain_rand_enabled: False
 snapshot: run.yaml -> delta_max: 0.526
 roundtrip: True
+seed: 3 | sensor_seed field: None
+derived sensor_seed: 3
 kwargs > cfg: 0.8 (cfg: 1.2 )
 cfg carries max_steps: 500
 domain_rand: library default False | cfg True | kwargs False
@@ -692,8 +698,26 @@ domain_rand: library default False | cfg True | kwargs False
 `EnvConfig.domain_rand_enabled` defaults to **False**: the library is deterministic
 unless you ask otherwise. The resolution is three layers — `cs.make(domain_rand=True)`
 wins over `cfg.domain_rand_enabled`, which wins over the library `False`.
-`to_yaml()` writes all 44 fields, so `from_yaml()` restores an identical config and
+`to_yaml()` writes all 45 fields, so `from_yaml()` restores an identical config and
 the snapshot compares equal to the object it came from.
+
+`EnvConfig.seed` is the **run seed** and is `None` by default. When it is set, the
+environment hands it to the bridge it builds itself, so the domain-randomization
+noise (LiDAR additive noise and odometry drift) draws from a bridge-owned
+`np.random.default_rng(seed)`: two runs with the same seed are bit-identical, and the
+global `np.random` is left alone. With `seed=None` those noises keep drawing from the
+global generator — the 1.0.x behaviour, unchanged bit for bit. `EnvConfig.sensor_seed`
+is `None` by default too and only seeds the sensor random streams; the derivation rule
+lives in one place (`config.schema.resolve_sensor_seed`):
+
+```text
+sensor_seed if sensor_seed is not None else (seed if seed is not None else 0)
+```
+
+So `cs.make(seed=3)` produces exactly the sensor readings of a 1.0.x
+`cs.make(sensor_seed=3)`, while `cs.make(seed=3, sensor_seed=5)` uses 3 for the
+domain-randomization stream and 5 for the sensors — the two are independent inputs,
+not aliases.
 
 ## Migrating from 0.2.x
 
@@ -725,10 +749,12 @@ declare `requires: planning`.
 | `maze_grid` | `planning` | 1 | 0 | grid maze (YAML seed 1) |
 
 `cs.make(scenario=...)` loads the scenario and translates it into reset options,
-but it **does not** call `reset()` for you: the keys land in
-`env.default_reset_options` and you hand them to `reset()` yourself. Nothing is
-applied silently, and a misspelled scenario raises `ScenarioNotFoundError` instead of
-being ignored.
+which it stores in `env.default_reset_options`. Since 1.1.0 `reset()` consumes them
+**automatically** when you pass no `options`, so the scenario is live with nothing
+else to remember. The priority is one sentence long: options you give explicitly —
+including the empty dict `{}` — are used verbatim, and only `options=None` falls back
+to `env.default_reset_options`. A misspelled scenario still raises
+`ScenarioNotFoundError` instead of being ignored.
 
 ```python
 import chassis_sim as cs
@@ -737,7 +763,7 @@ env = cs.make("ackermann", scenario="corridor", max_steps=100)
 print("scenario:", env.scenario.name, "requires:", env.scenario.requires)
 print("reset option keys:", sorted(env.default_reset_options))
 
-obs, info = env.reset(seed=0, options=env.default_reset_options)
+obs, info = env.reset(seed=0)  # options default to env.default_reset_options
 print(
     "obs:",
     obs.shape,

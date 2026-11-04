@@ -1,7 +1,34 @@
 # Changelog
 
 All notable changes to `chassis-sim`. This file documents the changes present in
-the working tree; the most recent release is `1.0.2`.
+the working tree; the most recent release is `1.1.0`.
+
+## 1.1.0
+
+### Added
+
+- **`EnvConfig.seed` — a run seed that actually reproduces the run.** With `domain_rand=True`
+  the LiDAR noise and the odometry drift used to come from the global `np.random`, so two
+  runs with the same seed diverged. `SimpleBridge(seed=...)` now owns a
+  `np.random.Generator` and every domain-randomisation draw goes through it;
+  `cs.make(seed=...)` sets the run seed and — when `sensor_seed` is not given — also the
+  sensor streams, through one rule implemented once
+  (`chassis_sim.config.resolve_sensor_seed`):
+  `sensor_seed if sensor_seed is not None else (seed if seed is not None else 0)`.
+  A bridge you construct yourself keeps ownership of its own randomness.
+  Bit-for-bit compatibility: with `seed=None` the bridge still draws from the global
+  `np.random` (verified identical to 1.0.2 on a clean worktree), and `make(seed=3)` alone
+  still yields the same sensor streams and scenario maps as 1.0.2.
+
+### Changed
+
+- **`env.reset()` now consumes `env.default_reset_options`.** `cs.make(scenario=...)` already
+  stored the scenario keys on the env, but `reset()` ignored them unless you handed them
+  over yourself — a forgotten `options=` silently fell back to the empty field. From this
+  release `reset(options=None)` falls back to the stored defaults, while an explicit
+  `options=` (including `{}`) always wins.
+
+No other functional changes.
 
 ## 1.0.2
 

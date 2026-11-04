@@ -9,8 +9,8 @@
 雷达显式挂上（cs.Lidar），否则 info["d_min"] 恒为 bridge.max_range，min_d_min
 那一列没有信息量 —— 这是 1.0.0 "默认不装雷达" 的直接后果。
 
-场景经 cs.make(scenario=...) 挂到 env.default_reset_options 上；reset() 不会自动
-消费它，必须显式传 options=。
+场景经 cs.make(scenario=...) 挂到 env.default_reset_options 上；1.1.0 起 reset()
+会自动消费它（显式 options= 仍然优先）。
 """
 
 from __future__ import annotations

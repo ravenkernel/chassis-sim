@@ -27,9 +27,12 @@
    （`[0, 10, 0, 10]` / `10.0` / `0.03` / `0.05`），因此默认构造下与旧桥
    位级一致。
 
-域随机化：`domain_rand=True` 时 LiDAR 噪声与里程计漂移吃的是**全局** `np.random`
-（主仓已知行为，此处照抄）。所以 `reset(seed=...)` 管不到它 —— 严格复现需同时固定
-`np.random` 与 torch 的随机种子。
+域随机化：两个开关分工不同。
+  · `domain_rand=True` 打开 LiDAR 加性高斯噪声 + 里程计随机游走漂移；
+  · `seed` 决定这些噪声从哪条随机流里取：`seed` 非 None ⇒ 桥自持
+    `np.random.default_rng(seed)`（同一 seed 的两次构造逐位相同，且不扰动
+    全局 `np.random`）；`seed=None`（默认）⇒ 仍旧吃**全局**
+    `np.random`，即 1.0.x 的既有行为、数值逐位不变（要复现就由调用方固定全局种子）。
 """
 
 from __future__ import annotations
@@ -80,8 +83,13 @@ class SimpleBridge(SensorProvider):
     max_range:
         LiDAR 最大量程（米），默认 10.0（= 主仓 env.yaml sensors.range_max）。
     domain_rand:
-        是否启用 LiDAR 加性高斯噪声 + 里程计随机游走漂移。**用全局 np.random**，
-        不吃 `reset(seed=...)`；严格复现需同时固定 np.random 与 torch 的种子。
+        是否启用 LiDAR 加性高斯噪声 + 里程计随机游走漂移。随机源由 seed 决定：
+        seed 给定时走本桥自持的 Generator，否则吃全局 np.random（历史行为）。
+    seed:
+        域随机化噪声的随机源种子。非 None ⇒ 本桥自持一条
+        np.random.default_rng(seed)，LiDAR 噪声与里程计漂移都从它取 ⇒ 同一 seed
+        的两次构造逐位相同，且不动全局 np.random。None（默认）⇒ 与 1.0.x 逐位
+        相同（吃全局 np.random，可复现性由调用方固定全局种子决定）。
     lidar_noise_std:
         LiDAR 高斯噪声标准差（米）。
     odom_drift_xy / odom_drift_theta:
@@ -107,8 +115,10 @@ class SimpleBridge(SensorProvider):
         随机数、info 零新键）。几何由本桥注入（`_raycast_body_ray`），sensors 包
         自己不碰世界；每支传感器一条按 `(sensor_seed, name)` 派生的独立随机流。
     sensor_seed:
-        传感器随机流种子。与 `domain_rand` 用的全局 np.random **无关**：传感器
-        绝不消耗全局序列，因此开关它们不会平移 domain_rand 的噪声。
+        传感器随机流种子。与 domain_rand 噪声用的随机源（见 seed）**无关**：传感器
+        绝不消耗 domain_rand 的序列，因此开关它们不会平移域随机化的噪声。
+        env 侧传入的是**已推导**的整数种子（见 config.schema.resolve_sensor_seed：
+        sensor_seed 优先，否则跟随 seed，都没有则 0）。
     """
 
     # ── 扫描几何常量（1.0 起雷达只有 get_sensor_reading 一个入口）──────────
@@ -123,6 +133,7 @@ class SimpleBridge(SensorProvider):
         world_bounds: tuple[float, float, float, float] = (0.0, 10.0, 0.0, 10.0),
         max_range: float = 10.0,
         domain_rand: bool = False,
+        seed: int | None = None,
         lidar_noise_std: float = 0.03,
         odom_drift_xy: float = 0.01,
         odom_drift_theta: float = 0.005,
@@ -142,6 +153,11 @@ class SimpleBridge(SensorProvider):
         self.boundary_margin = float(boundary_margin)
 
         self._domain_rand = bool(domain_rand)
+        # 域随机化噪声的随机源（1.1.0 D）：seed 非 None ⇒ 自持一条 Generator，
+        # 同 seed 逐位可复现且不动全局 np.random；None ⇒ 仍旧吃全局 np.random
+        # （1.0.x 的既有行为，数值逐位不变）。
+        self._seed = None if seed is None else int(seed)
+        self._rng = None if self._seed is None else np.random.default_rng(self._seed)
         self._lidar_noise_std = float(lidar_noise_std)
         self._odom_drift_xy = float(odom_drift_xy)
         self._odom_drift_theta = float(odom_drift_theta)
@@ -220,6 +236,19 @@ class SimpleBridge(SensorProvider):
         # 局部角点，但 :598-599 又按 hl/hw（含 margin）重建 —— 缓存那份是死代码。
         # 本实现只保留世界系缓冲，局部角点每帧按 margin 重建。
         self._collision_corners_world = np.empty((4, 2), dtype=np.float64)
+
+    def _noise(self, scale: float, size: Any = None) -> Any:
+        """域随机化的高斯噪声 N(0, scale)：随机源只有一个判据 —— 有没有 seed。
+
+        * seed 非 None ⇒ 从本桥自持的 Generator 取（同 seed 逐位可复现）；
+        * seed 为 None ⇒ 从全局 np.random 取（1.0.x 的既有行为）。
+
+        `size=None` 返回标量（里程计漂移），给 `size` 返回数组（LiDAR 噪声）。
+        两条路径的调用形状与 1.0.x 逐字一致，因此 seed=None 时逐位不变。
+        """
+        if self._rng is None:
+            return np.random.normal(0.0, scale, size=size)
+        return self._rng.normal(0.0, scale, size=size)
 
     # ═════════════════════════════════════════════════════════════════
     # SensorProvider 接口
@@ -631,11 +660,10 @@ class SimpleBridge(SensorProvider):
             out=self._lidar_distances,
         )
 
-        # Domain randomisation（全局 np.random，历史行为；参数化传感器不走这里）
+        # Domain randomisation（随机源见 _noise：有 seed 走自持 Generator，否则走
+        # 全局 np.random；参数化传感器不走这里，它们有自己的 Generator）
         if domain_rand:
-            noise = np.random.normal(0.0, self._lidar_noise_std, size=n_rays).astype(
-                np.float64
-            )
+            noise = self._noise(self._lidar_noise_std, n_rays).astype(np.float64)
             self._lidar_distances += noise
             np.clip(
                 self._lidar_distances,
@@ -720,11 +748,9 @@ class SimpleBridge(SensorProvider):
         y = self._y + self._odom_drift_y
         t = self._theta + self._odom_drift_t
         if self._domain_rand:
-            self._odom_drift_x += np.random.normal(0.0, self._odom_drift_xy * self.dt)
-            self._odom_drift_y += np.random.normal(0.0, self._odom_drift_xy * self.dt)
-            self._odom_drift_t += np.random.normal(
-                0.0, self._odom_drift_theta * self.dt
-            )
+            self._odom_drift_x += self._noise(self._odom_drift_xy * self.dt)
+            self._odom_drift_y += self._noise(self._odom_drift_xy * self.dt)
+            self._odom_drift_t += self._noise(self._odom_drift_theta * self.dt)
         return np.array([x, y, t, self._v, self._omega], dtype=np.float32)
 
     # ── 只读快照访问器（渲染层用；不改变任何既有行为）────────────────
