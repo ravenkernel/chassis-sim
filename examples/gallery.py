@@ -2,10 +2,10 @@
 
 用法（仓库根目录）::
 
-    python examples/gallery.py --out docs/media              # 全部 11 个素材
-    python examples/gallery.py --out docs/media --only gif   # 只出 5 段 GIF
-    python examples/gallery.py --out docs/media --only png   # 只出 6 张场景静图
-    python examples/gallery.py --out docs/media --dpi 120    # 静图降分辨率（下限 100）
+    python examples/gallery.py --out assets                  # 全部 11 个素材
+    python examples/gallery.py --out assets --only gif       # 只出 5 段 GIF
+    python examples/gallery.py --out assets --only png       # 只出 6 张场景静图
+    python examples/gallery.py --out assets --dpi 120        # 静图降分辨率（下限 100）
 
 产物规格：GIF 每段 TARGET_FRAMES(28) 帧、fps FPS(12)、画布 GIF_FIGSIZE x GIF_DPI；
 6 张静图仍是 900x900（6x6 @ dpi 150）。单文件 <= 1.5 MB、11 个文件合计 <= 6.5 MB。
@@ -28,7 +28,7 @@ imageio 的 save_gif 不认 palettesize/subrectangles（2.37 实测静默忽略�
 PIL 量化无随机；"先跑一遍录动作、再 reset 一遍回放"两步的初态逐位相同。
 渲染层写 PNG 时清掉 Software 元数据与时间戳、GIF 不含时间戳 ⇒ 同一条命令连跑两次，
 11 个文件逐字节相同（_report 会把每个文件的 sha256 打出来）。临时帧目录用
-tempfile.mkdtemp()，函数结束即删，不落在 docs/media 里。
+tempfile.mkdtemp()，函数结束即删，不落在 assets 里。
 """
 
 from __future__ import annotations
@@ -434,9 +434,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="重生 README 演示素材（5 段 GIF + 6 张静图）"
     )
-    parser.add_argument(
-        "--out", default="docs/media", help="产物目录（默认 docs/media）"
-    )
+    parser.add_argument("--out", default="assets", help="产物目录（默认 assets）")
     parser.add_argument(
         "--only",
         choices=("all", "gif", "png"),

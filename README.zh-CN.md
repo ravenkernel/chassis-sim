@@ -10,7 +10,7 @@
 纯 NumPy 仿真器、可组合的观测 spec、声明式传感器、参考控制器，以及一套
 “建环境 / 评测 / 录制”各一行就够的公共 API。
 
-版本 1.x 线（具体版本见 `pyproject.toml`）。Python 3.10+。
+具体版本见 `pyproject.toml`。Python 3.10+。
 
 ## 概览
 
@@ -30,12 +30,12 @@
 
 默认观测是四段 spec `ObsSpec.default(action_dim, points=30)` —— 里程计、参考路径、
 目标点、上一步归一化动作 —— 所以在两个 2 维动作的底盘上是 128 维，麦轮是 129 维。
-0.1.x 那个 494 维向量不再是默认值，1.x 也不内置 494 预设：九段 `ObsSpec` 由使用
-者自己写，见[观测与动作契约](#观测与动作契约)。
+不内置 494 维预设：九段 `ObsSpec` 由使用者自己写，
+见[观测与动作契约](#观测与动作契约)。
 
 ## 安装
 
-1.x 已上 PyPI：
+本包已上 PyPI：
 
 ```bash
 pip install "chassis-sim[viz]"
@@ -44,8 +44,7 @@ pip install "chassis-sim[viz]==X.Y.Z"   # 锁定到某个 tag
 
 只要核心依赖就去掉 `[viz]`；Hybrid-A* 地图生成器在 `[planning]` 里。想按 tag 锁定
 而不是走 PyPI，每个 tag 的 [GitHub release](https://github.com/ravenkernel/chassis-sim/releases)
-页面都挂着 wheel。0.2.x 是迁移案例：它的默认观测、传感器访问器和若干模块路径都与
-1.0.0 不同 —— 对照表见 [docs/migration-1.0.md](docs/migration-1.0.md)。
+页面都挂着 wheel。
 
 从源码安装（含开发工具）：
 
@@ -67,7 +66,7 @@ pip install -e ".[dev]"
 只给 GIF 导出用，两者都在 `viz` 里 —— `cs.record()`、`cs.snapshot()` 和
 `examples/gallery.py` 依赖的就是它。
 
-1.x 只内置一个仿真后端：纯 NumPy 的 `SimpleBridge`。不需要任何外部仿真器，也没
+本库只内置一个仿真后端：纯 NumPy 的 `SimpleBridge`。不需要任何外部仿真器，也没
 有对应的 optional extra：ROS 2 / Gazebo 一类后端不在本包范围内。
 `PhysicalCommandBridge` 是把自己的物理引擎接进同一套观测/奖励流水线的正式接缝。
 
@@ -127,13 +126,13 @@ positional-only，只接受底盘名或 `EnvConfig` 实例；其余一律关键�
 十一份素材，一条命令在场景 seed 0 下全部重建：
 
 ```bash
-python examples/gallery.py --out docs/media
+python examples/gallery.py --out assets
 ```
 
 五段 GIF 是真实闭环跑出来的 12 fps 回放：控制器从 seed-0 的 reset 状态出发驱动环境，
 录下来的动作序列再从同一初态重放，因此每段都可复现，也都真的到达了目标。六张静图是
 场景的初始状态（`reset` 后第 0 步，底盘 `ackermann`，不挂控制器），画面里带障碍场、
-参考路径、车体，以及角落里的底盘名与场景名。每张图链到 `docs/media/` 下的原尺寸文件。
+参考路径、车体，以及角落里的底盘名与场景名。每张图链到 `assets/` 下的原尺寸文件。
 
 ### 底盘运动学 —— 一条参考路径，一个控制器
 
@@ -143,9 +142,9 @@ python examples/gallery.py --out docs/media
 <table>
 <tbody>
 <tr>
-<td align="center" width="33%"><a href="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/chassis_ackermann.gif"><img src="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/chassis_ackermann.gif" width="250" alt="阿克曼底盘跟踪 obstacles_sparse 路径"></a><br><code>chassis_ackermann.gif</code><br><em>obstacles_sparse · ackermann · pure_pursuit</em></td>
-<td align="center" width="33%"><a href="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/chassis_diff_drive.gif"><img src="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/chassis_diff_drive.gif" width="250" alt="差速底盘跟踪同一条 obstacles_sparse 路径"></a><br><code>chassis_diff_drive.gif</code><br><em>obstacles_sparse · diff_drive · pure_pursuit</em></td>
-<td align="center" width="33%"><a href="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/chassis_mecanum.gif"><img src="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/chassis_mecanum.gif" width="250" alt="麦轮底盘跟踪同一条 obstacles_sparse 路径"></a><br><code>chassis_mecanum.gif</code><br><em>obstacles_sparse · mecanum · pure_pursuit</em></td>
+<td align="center" width="33%"><a href="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/assets/chassis_ackermann.gif"><img src="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/assets/chassis_ackermann.gif" width="250" alt="阿克曼底盘跟踪 obstacles_sparse 路径"></a><br><code>chassis_ackermann.gif</code><br><em>obstacles_sparse · ackermann · pure_pursuit</em></td>
+<td align="center" width="33%"><a href="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/assets/chassis_diff_drive.gif"><img src="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/assets/chassis_diff_drive.gif" width="250" alt="差速底盘跟踪同一条 obstacles_sparse 路径"></a><br><code>chassis_diff_drive.gif</code><br><em>obstacles_sparse · diff_drive · pure_pursuit</em></td>
+<td align="center" width="33%"><a href="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/assets/chassis_mecanum.gif"><img src="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/assets/chassis_mecanum.gif" width="250" alt="麦轮底盘跟踪同一条 obstacles_sparse 路径"></a><br><code>chassis_mecanum.gif</code><br><em>obstacles_sparse · mecanum · pure_pursuit</em></td>
 </tr>
 </tbody>
 </table>
@@ -161,8 +160,8 @@ python examples/gallery.py --out docs/media
 <table>
 <tbody>
 <tr>
-<td align="center" width="50%"><a href="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/controller_pure_pursuit.gif"><img src="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/controller_pure_pursuit.gif" width="400" alt="纯追踪控制器跑 dense_static 路径"></a><br><code>controller_pure_pursuit.gif</code><br><em>dense_static · ackermann · pure_pursuit</em></td>
-<td align="center" width="50%"><a href="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/controller_dwa.gif"><img src="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/controller_dwa.gif" width="400" alt="DWA 控制器跑 dense_static 路径"></a><br><code>controller_dwa.gif</code><br><em>dense_static · ackermann · dwa</em></td>
+<td align="center" width="50%"><a href="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/assets/controller_pure_pursuit.gif"><img src="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/assets/controller_pure_pursuit.gif" width="400" alt="纯追踪控制器跑 dense_static 路径"></a><br><code>controller_pure_pursuit.gif</code><br><em>dense_static · ackermann · pure_pursuit</em></td>
+<td align="center" width="50%"><a href="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/assets/controller_dwa.gif"><img src="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/assets/controller_dwa.gif" width="400" alt="DWA 控制器跑 dense_static 路径"></a><br><code>controller_dwa.gif</code><br><em>dense_static · ackermann · dwa</em></td>
 </tr>
 </tbody>
 </table>
@@ -175,16 +174,16 @@ DWA 走更保守的一条线，用更少的步数收工。
 <table>
 <tbody>
 <tr>
-<td align="center" width="50%"><a href="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/scene_straight.png"><img src="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/scene_straight.png" width="400" alt="straight：空场景，只有参考路径与车体轮廓"></a><br><code>scene_straight.png</code><br><em>straight · seed 0 · reset 后第 0 步</em></td>
-<td align="center" width="50%"><a href="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/scene_corridor.png"><img src="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/scene_corridor.png" width="400" alt="corridor：两堵长墙夹出可行带"></a><br><code>scene_corridor.png</code><br><em>corridor · seed 0 · reset 后第 0 步</em></td>
+<td align="center" width="50%"><a href="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/assets/scene_straight.png"><img src="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/assets/scene_straight.png" width="400" alt="straight：空场景，只有参考路径与车体轮廓"></a><br><code>scene_straight.png</code><br><em>straight · seed 0 · reset 后第 0 步</em></td>
+<td align="center" width="50%"><a href="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/assets/scene_corridor.png"><img src="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/assets/scene_corridor.png" width="400" alt="corridor：两堵长墙夹出可行带"></a><br><code>scene_corridor.png</code><br><em>corridor · seed 0 · reset 后第 0 步</em></td>
 </tr>
 <tr>
-<td align="center" width="50%"><a href="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/scene_dense_static.png"><img src="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/scene_dense_static.png" width="400" alt="dense_static：14 个障碍贴参考路径排布"></a><br><code>scene_dense_static.png</code><br><em>dense_static · seed 0 · reset 后第 0 步</em></td>
-<td align="center" width="50%"><a href="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/scene_obstacles_dense.png"><img src="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/scene_obstacles_dense.png" width="400" alt="obstacles_dense：Hybrid-A* 地图生成器产物"></a><br><code>scene_obstacles_dense.png</code><br><em>obstacles_dense · seed 0 · reset 后第 0 步</em></td>
+<td align="center" width="50%"><a href="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/assets/scene_dense_static.png"><img src="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/assets/scene_dense_static.png" width="400" alt="dense_static：14 个障碍贴参考路径排布"></a><br><code>scene_dense_static.png</code><br><em>dense_static · seed 0 · reset 后第 0 步</em></td>
+<td align="center" width="50%"><a href="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/assets/scene_obstacles_dense.png"><img src="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/assets/scene_obstacles_dense.png" width="400" alt="obstacles_dense：Hybrid-A* 地图生成器产物"></a><br><code>scene_obstacles_dense.png</code><br><em>obstacles_dense · seed 0 · reset 后第 0 步</em></td>
 </tr>
 <tr>
-<td align="center" width="50%"><a href="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/scene_dynamic_crossing.png"><img src="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/scene_dynamic_crossing.png" width="400" alt="dynamic_crossing：动态圆在 t=0 时的位姿"></a><br><code>scene_dynamic_crossing.png</code><br><em>dynamic_crossing · seed 0 · reset 后第 0 步</em></td>
-<td align="center" width="50%"><a href="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/scene_obstacles_sparse.png"><img src="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/docs/media/scene_obstacles_sparse.png" width="400" alt="obstacles_sparse：Hybrid-A* 地图生成器产物"></a><br><code>scene_obstacles_sparse.png</code><br><em>obstacles_sparse · seed 0 · reset 后第 0 步</em></td>
+<td align="center" width="50%"><a href="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/assets/scene_dynamic_crossing.png"><img src="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/assets/scene_dynamic_crossing.png" width="400" alt="dynamic_crossing：动态圆在 t=0 时的位姿"></a><br><code>scene_dynamic_crossing.png</code><br><em>dynamic_crossing · seed 0 · reset 后第 0 步</em></td>
+<td align="center" width="50%"><a href="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/assets/scene_obstacles_sparse.png"><img src="https://raw.githubusercontent.com/ravenkernel/chassis-sim/main/assets/scene_obstacles_sparse.png" width="400" alt="obstacles_sparse：Hybrid-A* 地图生成器产物"></a><br><code>scene_obstacles_sparse.png</code><br><em>obstacles_sparse · seed 0 · reset 后第 0 步</em></td>
 </tr>
 </tbody>
 </table>
@@ -237,9 +236,9 @@ describe: {'odom': slice(0, 4, None), 'path': slice(4, 124, None), 'goal': slice
 
 ### 显式的 494 维预设
 
-0.2.x 的 494 维布局是一个九段 spec（`lidar 360 + odom 4 + path 120 + goal 2 +
+494 维布局是一个九段 spec（`lidar 360 + odom 4 + path 120 + goal 2 +
 act 2 + err 2 + goal_sig 2 + path_valid 1 + path_progress 1`，`action_dim=2` 时）。
-1.x 把这些段一个不落地留着，但不内置由它们拼成的预设 —— 因为 LiDAR 段只有在你
+这些段一个不落地都还在，但不内置由它们拼成的预设 —— 因为 LiDAR 段只有在你
 显式声明了它要读的传感器之后才有意义。自己把 spec 写出来：
 
 ```python
@@ -357,7 +356,7 @@ inner received: [[0.1722752169535286, 0.6]]
 | `info[<轮速计名>]` | `{"v_left", "v_right", "v", "t"}` |
 
 `bridge.get_sensor_reading()` 是唯一的原始入口，返回的就是 `info` 各键取自的那份
-字典。1.x 没有按传感器类型分开的便利访问器：一个方法覆盖所有传感器，名字和参数都
+字典。没有按传感器类型分开的便利访问器：一个方法覆盖所有传感器，名字和参数都
 不影响调用。不配传感器时 `info` 里一个传感器键都没有。
 
 ```python
@@ -648,24 +647,17 @@ domain_rand: library default False | cfg True | kwargs False
 
 `EnvConfig.seed` 是**运行种子**，默认 `None`。给了它就下发给 env 自己造的桥，域随机化
 噪声（LiDAR 加性噪声 + 里程计漂移）因此走桥自持的 `np.random.default_rng(seed)`：
-同 seed 的两次运行逐位相同，且不动全局 `np.random`。`seed=None` 时这两路噪声仍旧与
-1.0.x 一样吃全局 `np.random`，数值逐位不变。`EnvConfig.sensor_seed` 默认同样是
+同 seed 的两次运行逐位相同，且不动全局 `np.random`。`seed=None` 时这两路噪声仍旧
+吃全局 `np.random`，数值逐位不变。`EnvConfig.sensor_seed` 默认同样是
 `None`，只管传感器随机流；推导规则只有一处实现（`config.schema.resolve_sensor_seed`）：
 
 ```text
 sensor_seed if sensor_seed is not None else (seed if seed is not None else 0)
 ```
 
-所以 `cs.make(seed=3)` 的传感器读数与 1.0.x 的 `cs.make(sensor_seed=3)` 逐位相同，
+所以 `cs.make(seed=3)` 的传感器读数与之前逐位相同，
 而 `cs.make(seed=3, sensor_seed=5)` 用 3 给域随机化随机流、5 给传感器随机流 ——
 两者是独立输入，不是别名。
-
-## 从 0.2.x 迁移
-
-0.2.x 不是可直接替换的升级：默认观测宽度、观测预设辅助、路径段名字、激光访问器、
-回合数关键字、若干模块路径都变了，默认环境也不再自动装雷达。
-[docs/migration-1.0.md](docs/migration-1.0.md) 是迁移指南 —— 一张 旧 → 新 对照表配
-可跑的替换代码、观测预设的逐段移植，以及钉住那九个切片的 golden 测试。
 
 ## 场景
 
@@ -687,7 +679,7 @@ Reeds-Shepp 规划，声明了 `requires: planning`。
 | `maze_grid` | `planning` | 1 | 0 | 网格迷宫（YAML seed 1） |
 
 `cs.make(scenario=...)` 会加载场景并翻译成 reset options，存进
-`env.default_reset_options`。1.1.0 起 `reset()` 在你不传 `options` 时会**自动消费**
+`env.default_reset_options`。`reset()` 在你不传 `options` 时会**自动消费**
 这份默认值 —— 场景不再静默失效，也不用每次记得带。优先级只有一句：你显式给出的
 options（含空 dict `{}`）一律原样使用，只有 `options=None` 才回落到
 `env.default_reset_options`。场景名写错时 `ScenarioNotFoundError` 原样抛出，
@@ -925,7 +917,7 @@ all non-empty: True
    子包，而 import 子模块会把父包同名属性重绑成 module 对象 —— 任何装成
    `chassis_sim.render` 的函数，都会在渲染器第一次被 import 时被覆盖（`cs.record()`
    就会触发这次 import）。因此另取名字；画图原语仍在 `chassis_sim.render` 里。
-4. **`ChassisSimEnv(device=...)` 是无效形参。** 编码器早在 1.0.0 之前就移进了 Actor，
+4. **`ChassisSimEnv(device=...)` 是无效形参。** 编码器已经移进了 Actor，
    观测构造是纯 NumPy，所以 `device` 不再选择任何东西；保留它只是为了让仍然透传它的
    训练脚本还能 import。别指望它能搬动计算。
 5. **离散碰撞检测，没有扫掠体。** 碰撞是逐步对当前车体 OBB 与圆/有向矩形做离散判定

@@ -1,7 +1,20 @@
 # Changelog
 
 All notable changes to `chassis-sim`. This file documents the changes present in
-the working tree; the most recent release is `1.1.0`.
+the working tree; the most recent release is `1.1.1`.
+
+## 1.1.1
+
+### Changed
+
+- **The gallery images moved from `docs/media/` to `assets/`, and `docs/` is no longer
+  tracked.** The wiki-style documents under `docs/` were internal working notes; they are
+  not part of the library and are no longer published. No code, no public API and no
+  observation/sensor behaviour changed in this release.
+- **Both READMEs now describe only the current release.** The migration notes, the
+  "0.1.x line vs 1.x line" comparisons and the "since 1.1.0" phrasing are gone; every
+  statement is present-tense so the text does not rot with each release. Version numbers
+  live in `pyproject.toml` and in this changelog, not in the README prose.
 
 ## 1.1.0
 

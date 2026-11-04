@@ -100,7 +100,7 @@ the five commands above stay authoritative.
 - **Gates green, not "nearly".** All five commands above run locally before the PR is
   opened. A red gate that CI turns green because a test skipped is not green.
 - **Docs for user-visible changes.** A changed default, a renamed parameter or a new
-  extra belongs in both READMEs, plus the section it affects in `docs/`.
+  extra belongs in both READMEs, in the section each one already has for it.
 
 ## Before you open a pull request
 
