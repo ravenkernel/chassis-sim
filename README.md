@@ -1,6 +1,6 @@
 # chassis-sim
 
-English | [简体中文](README.zh-CN.md)
+English | [简体中文](https://github.com/zhao6663/chassis-sim/blob/main/README.zh-CN.md)
 
 [![CI](https://github.com/zhao6663/chassis-sim/actions/workflows/ci.yml/badge.svg)](https://github.com/zhao6663/chassis-sim/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue)](https://github.com/zhao6663/chassis-sim)
