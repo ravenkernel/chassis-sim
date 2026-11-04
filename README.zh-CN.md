@@ -10,7 +10,7 @@
 （differential drive）与麦克纳姆轮（mecanum） —— 提供归一化动作、纯 NumPy 仿真器、
 可组合的观测规约、声明式传感器，以及用于可复现评测的参考控制器。
 
-版本 0.2.0。Python 3.10+。
+版本 0.2.1。Python 3.10+。
 
 ## 概览
 
@@ -35,17 +35,16 @@
 
 ## 安装
 
-本包尚未发布到 PyPI。请安装 `v0.2.0` 的 release wheel —— 它作为附件挂在
-[GitHub release](https://github.com/zhao6663/chassis-sim/releases/tag/v0.2.0) 上 ——
-或者直接从一个 checkout 出发：
+从 PyPI 安装：
 
 ```bash
-pip install "chassis-sim[viz] @ https://github.com/zhao6663/chassis-sim/releases/download/v0.2.0/chassis_sim-0.2.0-py3-none-any.whl"
+pip install "chassis-sim[viz]"
 ```
 
-去掉 `[viz]` 后缀即为核心安装；需要 Hybrid-A* 地图生成器则用 `[planning]`。0.1.x
-系列（tag `v0.1.4`）属于迁移场景：它仍在用旧的 494 维观测和旧的单配置
-（single-config）传感器 API。
+去掉 `[viz]` 后缀即为核心安装；需要 Hybrid-A* 地图生成器则用 `[planning]`。要固定到
+某个版本的源码包？每个 tag 的 [GitHub release](https://github.com/zhao6663/chassis-sim/releases)
+页面都挂着对应的 wheel。0.1.x 系列（tag `v0.1.4`）属于迁移场景：它仍在用旧的
+494 维观测和旧的单配置（single-config）传感器 API。
 
 在 checkout 里连开发工具链一起装：
 
@@ -67,7 +66,7 @@ pip install -e ".[dev]"
 `imageio` 只在导出 GIF 时需要；两者都在 `viz` extra 里，也就是 `examples/gallery.py`
 所需的那一组。
 
-0.2.0 系列只内置一个仿真器：纯 NumPy 的 `SimpleBridge`。不需要任何外部仿真器，也没有
+0.2.x 系列只内置一个仿真器：纯 NumPy 的 `SimpleBridge`。不需要任何外部仿真器，也没有
 `irsim` extra：ir-sim 与 ROS 2 后端不属于本包（它们仍留在上游训练仓库中）。
 `PhysicalCommandBridge` 就是为这类后端预留、并有文档说明的接缝（seam）。
 
@@ -1129,6 +1128,6 @@ CI 在 Python 3.10、3.11、3.12 上跑测试套件（`.github/workflows/ci.yml`
 ---
 
 本 README 中的所有数字均于 2026-11-04（UTC）在 Python 3.12.0、NumPy 1.26.4、
-Gymnasium 1.3.0 上测得，对应 0.2.0 版本。默认观测在两台 2 维动作底盘上是 128 维、在
+Gymnasium 1.3.0 上测得，对应 0.2.1 版本。默认观测在两台 2 维动作底盘上是 128 维、在
 麦轮上是 129 维。评测矩阵使用十张独立地图、`max_steps=500` 与 `base_seed=0`。本文件中
 的代码块在仓库的校验流程里是按原样执行的。

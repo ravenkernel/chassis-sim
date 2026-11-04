@@ -1,7 +1,22 @@
 # Changelog
 
 All notable changes to `chassis-sim`. This file documents the changes present in
-the working tree; the most recent published tag is `v0.2.0`.
+the working tree; the most recent published tag is `v0.2.1`.
+
+## 0.2.1
+
+### Fixed
+
+- **The install instructions now match reality.** `0.2.0` shipped with a README that still
+  said the package was not on PyPI (written before the upload). `pip install chassis-sim` is
+  the supported entry point; the wheel attached to each GitHub release stays available for
+  pinning to a tag.
+- **The language switch works from the PyPI page too.** Both READMEs link to each other
+  with absolute `blob/main` URLs instead of repo-relative paths, which would 404 on
+  pypi.org.
+
+No functional changes: the simulator, the observation segments and the sensor specs are
+identical to `0.2.0`.
 
 ## 0.2.0
 

@@ -11,7 +11,7 @@ steering, differential drive, and mecanum — with normalized actions, a pure-Nu
 simulator, a composable observation spec, declarative sensors, and reference
 controllers for reproducible evaluation.
 
-Version 0.2.0. Python 3.10+.
+Version 0.2.1. Python 3.10+.
 
 ## At a glance
 
@@ -41,17 +41,17 @@ which is documented in [Observation and action contract](#observation-and-action
 
 ## Installation
 
-The package is not on PyPI yet. Install the `v0.2.0` release wheel — it is attached
-to the [GitHub release](https://github.com/zhao6663/chassis-sim/releases/tag/v0.2.0) —
-or work from a checkout:
+Install it from PyPI:
 
 ```bash
-pip install "chassis-sim[viz] @ https://github.com/zhao6663/chassis-sim/releases/download/v0.2.0/chassis_sim-0.2.0-py3-none-any.whl"
+pip install "chassis-sim[viz]"
 ```
 
 Drop the `[viz]` suffix for a core install, or use `[planning]` for the Hybrid-A*
-map generator. The 0.1.x line (tag `v0.1.4`) is the migration case: it still has
-the old 494-value observation and the old single-config sensor API.
+map generator. Need a pinned source instead of PyPI? Every tag carries a wheel on its
+[GitHub release](https://github.com/zhao6663/chassis-sim/releases) page. The 0.1.x line
+(tag `v0.1.4`) is the migration case: it still has the old 494-value observation
+and the old single-config sensor API.
 
 From a checkout, with the development tools:
 
@@ -73,7 +73,7 @@ The core install depends only on `numpy`, `gymnasium`, and `pyyaml`.
 `matplotlib` is needed only for rendering and `imageio` only for GIF export; both
 come with the `viz` extra, which is what `examples/gallery.py` needs.
 
-The 0.2.0 line ships exactly one built-in simulator: the pure-NumPy `SimpleBridge`.
+The 0.2.x line ships exactly one built-in simulator: the pure-NumPy `SimpleBridge`.
 No external simulator is required, and there is no `irsim` extra: the ir-sim and
 ROS 2 backends are not part of this package (they remain in the upstream training
 repository). `PhysicalCommandBridge` is the documented seam for such a backend.
@@ -1194,7 +1194,7 @@ If you use this package in academic work, cite the repository:
 ---
 
 All numbers in this README were measured on 2026-11-04 (UTC) with Python 3.12.0,
-NumPy 1.26.4, and Gymnasium 1.3.0, on version 0.2.0. The default observation is 128
+NumPy 1.26.4, and Gymnasium 1.3.0, on version 0.2.1. The default observation is 128
 values on the two 2-action chassis and 129 on the mecanum. The evaluation matrix
 uses ten independent maps, `max_steps=500`, and `base_seed=0`. The code blocks in
 this file are executed as written in the repository's verification pass.
