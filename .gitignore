@@ -27,3 +27,4 @@ checkpoints/
 
 # 本地工作文档：不入库（README 需要的素材在 assets/）
 docs/
+CLAUDE.md
