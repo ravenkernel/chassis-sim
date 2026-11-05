@@ -11,12 +11,16 @@
    它带来两条性质：**跨进程稳定**（不依赖 Python 的 hash 随机化）与**增删无关**
    （新增一支传感器不会平移任何其它支的随机序列——`spawn` 做不到这一点，
    因为 spawn 的子流按位置分配）。
-3. **几何外置**：本包不 import 任何桥，射线求交由构造时注入的 `raycast` 提供::
+3. **几何外置**：本包不 import 任何桥，射线求交由构造时注入的钩子提供，两种形态::
 
        raycast(origin_xy: tuple[float, float], angle_rad: float, max_range: float) -> float
+       raycast_many(origin_xy: tuple[float, float], angles: np.ndarray, max_range: float) -> np.ndarray
 
-   `origin_xy` 与 `angle_rad` 都是**车体系**（车头 x 轴起、逆时针为正）：
-   套件不知道车在世界里的位姿，桥知道。返回该射线的命中距离（米）。
+   两者都收**车体系**参数（车头 x 轴起、逆时针为正）：套件不知道车在世界里的
+   位姿，桥知道。`raycast` 返回单条射线的命中距离（米）；`raycast_many` 一次
+   收下整帧方位角、返回等长距离数组（clip 语义须与 `raycast` 完全一致）。
+   **两者都给时 `raycast_many` 优先，一帧只调一次**；只给 `raycast` 时退化为
+   逐条射线调用（旧行为的兼容路径）。
 
 IMU 模型假设
 ============
@@ -78,6 +82,8 @@ from .specs import Imu, Lidar, SensorSpec, WheelOdom
 
 # 车体系射线求交：raycast(origin_xy, angle_rad, max_range) -> 距离（米）
 RaycastFn = Callable[[tuple[float, float], float, float], float]
+# 车体系整帧求交：raycast_many(origin_xy, angles, max_range) -> (len(angles),) 距离
+RaycastManyFn = Callable[[tuple[float, float], np.ndarray, float], np.ndarray]
 
 
 def derive_rng(seed: int, name: str) -> np.random.Generator:
@@ -129,23 +135,48 @@ class _LidarSensor:
         self._origin_xy = (float(spec.mount[0]), float(spec.mount[1]))
         self._angle_min = float(spec.angle_min)
         self._angle_increment = float(spec.angle_increment)
+        # 方位角只由 **frozen** spec 的 (mount.yaw, fov, n_rays) 决定：spec 不可变，
+        # 因此构造期算一次就够，不存在"mount 改了而缓存没跟上"的失效面。
+        self._bearings = (
+            self._angle_min
+            + np.arange(int(spec.n_rays), dtype=np.float64) * self._angle_increment
+        )
 
     def reset(self) -> None:
         """清空延迟缓冲（不重置随机流：种子只在构造时派生一次）。"""
         self._buffer.reset()
 
-    def update(self, *, raycast: RaycastFn, t: float) -> dict[str, Any]:
-        """采集并交付一帧。"""
+    def update(
+        self,
+        *,
+        raycast: RaycastFn | None,
+        raycast_many: RaycastManyFn | None,
+        t: float,
+    ) -> dict[str, Any]:
+        """采集并交付一帧；有 `raycast_many` 时整帧只调它一次。"""
         p = self.spec
         n_rays = int(p.n_rays)
-        bearings = self._angle_min + np.arange(n_rays, dtype=np.float64) * (
-            self._angle_increment
-        )
-        raw = np.fromiter(
-            (raycast(self._origin_xy, float(a), float(p.max_range)) for a in bearings),
-            dtype=np.float64,
-            count=n_rays,
-        )
+        if raycast_many is not None:
+            raw = np.asarray(
+                raycast_many(self._origin_xy, self._bearings, float(p.max_range)),
+                dtype=np.float64,
+            )
+            if raw.shape != (n_rays,):
+                raise ValueError(
+                    f"Lidar {p.name!r} 的 raycast_many 必须返回 ({n_rays},) 数组，"
+                    f"收到形状 {raw.shape}"
+                )
+        else:
+            if raycast is None:  # pragma: no cover - 构造期已拦住
+                raise ValueError(f"Lidar {p.name!r} 没有 raycast")
+            raw = np.fromiter(
+                (
+                    raycast(self._origin_xy, float(a), float(p.max_range))
+                    for a in self._bearings
+                ),
+                dtype=np.float64,
+                count=n_rays,
+            )
         ranges = np.clip(raw, p.range_min, p.max_range)
         if float(p.noise_std) > 0.0:
             ranges = ranges + self._rng.normal(0.0, p.noise_std, size=n_rays)
@@ -271,7 +302,8 @@ class SensorSuite:
 
     每支传感器各用一条由 `(seed, name)` 派生的独立子流，因此**新增/删除任何一支
     都不会平移其它支的随机序列**（见模块 docstring 的派生式）。几何完全外置：
-    LiDAR 的每条射线都调调用方注入的 `raycast`。
+    LiDAR 的整帧几何由注入的 `raycast_many` 一次算完；只给 `raycast` 时退化为
+    逐条射线调用（兼容路径）。
     """
 
     def __init__(
@@ -280,6 +312,7 @@ class SensorSuite:
         *,
         seed: int = 0,
         raycast: RaycastFn | None = None,
+        raycast_many: RaycastManyFn | None = None,
         default_track_width: float | None = None,
     ) -> None:
         """
@@ -287,7 +320,10 @@ class SensorSuite:
             specs: 传感器 spec 序列（`Lidar` / `Imu` / `WheelOdom` 任意混合，
                 顺序即读数键序）；空序列 = 没有任何传感器。
             seed: 随机流种子（>= 0）。与 domain_rand 的全局 np.random **无关**。
-            raycast: 车体系射线求交（有 Lidar 时必填，否则构造即报错）。
+            raycast: 车体系单射线求交（有 Lidar 时它与 `raycast_many` 至少给一个）。
+            raycast_many: 车体系整帧求交：一次收下全部方位角、返回等长距离数组。
+                与 `raycast` 都给时**本钩子优先**（一帧只调一次）；两者都不给且
+                装配了 Lidar 时构造即报错。
             default_track_width: `WheelOdom.track_width=None` 时用的轮距（米）。
                 桥会传底盘的 `footprint()[1]`；直接装配时也可显式给。
         """
@@ -296,13 +332,14 @@ class SensorSuite:
         self._seed = int(seed)
         self._specs: tuple[SensorSpec, ...] = tuple(specs)
         self._raycast = raycast
+        self._raycast_many = raycast_many
         self._sensors: dict[str, _LidarSensor | _ImuSensor | _WheelSensor] = {}
 
         for spec in self._specs:
             if isinstance(spec, Lidar):
-                if raycast is None:
+                if raycast is None and raycast_many is None:
                     raise ValueError(
-                        f"Lidar {spec.name!r} 需要注入 raycast："
+                        f"Lidar {spec.name!r} 需要注入 raycast 或 raycast_many："
                         "sensors 包不做几何求交（几何归桥）"
                     )
                 self._add(spec, _LidarSensor(spec, derive_rng(self._seed, spec.name)))
@@ -380,12 +417,13 @@ class SensorSuite:
     ) -> dict[str, dict[str, Any]]:
         """推进一拍的全部传感器，返回 `dict[name, reading]`（键序 = specs 顺序）。"""
         raycast = self._raycast
+        raycast_many = self._raycast_many
         reading: dict[str, dict[str, Any]] = {}
         for name, sensor in self._sensors.items():
             if isinstance(sensor, _LidarSensor):
-                if raycast is None:  # pragma: no cover - 构造期已拦住
-                    raise ValueError(f"Lidar {name!r} 没有 raycast")
-                reading[name] = sensor.update(raycast=raycast, t=t)
+                reading[name] = sensor.update(
+                    raycast=raycast, raycast_many=raycast_many, t=t
+                )
             elif isinstance(sensor, _ImuSensor):
                 reading[name] = sensor.update(v=v, vy=vy, omega=omega, theta=theta, t=t)
             else:

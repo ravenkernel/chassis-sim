@@ -245,6 +245,7 @@ class SimpleBridge(SensorProvider):
                 sensors,
                 seed=self._sensor_seed,
                 raycast=self._raycast_body_ray,
+                raycast_many=self._raycast_body_rays,
                 default_track_width=float(_width),
             )
         self._sensor_reading: dict[str, Any] | None = None
@@ -746,6 +747,38 @@ class SimpleBridge(SensorProvider):
         )
         return float(distances[0])
 
+    def _raycast_body_rays(
+        self, origin_xy: tuple[float, float], angles: np.ndarray, max_range: float
+    ) -> np.ndarray:
+        """车体系整帧求交——注入给 SensorSuite 的 `raycast_many`。
+
+        与 `_raycast_body_ray` 是**同一份算术、同一份顺序**：一次 `_cast_rays`
+        收下整帧世界系方位角 `self._theta + angles`。元素级加法与逐条调用的
+        `self._theta + angle_rad` 逐位相同，因此整帧结果与"逐条求交再拼起来"
+        逐位相同（`np.array_equal`），而不是仅在容差内一致。
+
+        Args:
+            origin_xy: 车体系射线原点 (x, y)，单位米。
+            angles: 车体系方位角数组（车头 x 轴起、逆时针为正），单位弧度；
+                长度即本帧射线数。
+            max_range: 本次求交的最大量程（米）。
+
+        Returns:
+            (len(angles),) float32：命中距离（米），已 clip 到
+            [RANGE_MIN, max_range]；clip 语义与 `_raycast_body_ray` 完全一致。
+        """
+        world_angles = self._theta + np.asarray(angles, dtype=np.float64)
+        return self._cast_rays(
+            front=True,
+            n_rays=int(world_angles.shape[0]),
+            fov=0.0,
+            max_range=float(max_range),
+            range_min=self.RANGE_MIN,
+            domain_rand=False,
+            mount=(float(origin_xy[0]), float(origin_xy[1])),
+            angles=world_angles,
+        )
+
     def get_sensor_reading(self) -> dict[str, Any] | None:
         """当前步的传感器读数（未启用任何传感器时为 None）。
 
@@ -769,9 +802,10 @@ class SimpleBridge(SensorProvider):
         """推进可选传感器；未启用时是零开销空操作（不消耗任何随机数）。"""
         if self._sensors is None:
             return
-        # LiDAR 的每条射线通过构造时注入的 _raycast_body_ray 回调求交；那里一律
-        # domain_rand=False —— 传感器的噪声来自自己的 Generator，绝不消耗全局
-        # np.random（否则会平移 domain_rand 的 LiDAR/里程计序列）。
+        # LiDAR 的整帧射线通过构造时注入的 _raycast_body_rays（批量）求交，逐条
+        # _raycast_body_ray 保留给直接调用方；两者都一律 domain_rand=False ——
+        # 传感器的噪声来自自己的 Generator，绝不消耗全局 np.random（否则会平移
+        # domain_rand 的 LiDAR/里程计序列）。
         self._sensor_reading = self._sensors.update(
             v=self._v,
             vy=self._vy,

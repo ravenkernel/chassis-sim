@@ -1,4 +1,4 @@
-"""3.0.0 的元数据自洽守卫：版本三源、extras、classifier 与 README 代码块。
+"""元数据自洽守卫：版本三源、extras、classifier 与 README 代码块。
 
 覆盖三类"声明与实际不符"：同一个版本号写在三个文件里（会漂移）、dev extra
 不带 CI 用到的闸门工具（本地 .[dev] 与 CI 就不是同一套环境）、README 的
@@ -19,7 +19,8 @@ PYPROJECT = REPO / "pyproject.toml"
 CITATION = REPO / "CITATION.cff"
 CHANGELOG = REPO / "CHANGELOG.md"
 CHECKER = REPO / "tools" / "check_readme_blocks.py"
-VERSION = "3.0.0"
+# 版本号以包为唯一真相源：pyproject 与 CITATION 都对照它，少一处手改
+VERSION = chassis_sim.__version__
 GATE_TOOLS = ("mypy", "pytest-cov", "types-PyYAML")
 
 
@@ -70,7 +71,6 @@ def _lower_bound(specs: list[str], package: str) -> tuple[int, ...]:
 def test_version_matches_in_pyproject_package_and_citation():
     """版本三源：pyproject / __version__ / CITATION 必须是同一个 3.0.0。"""
     assert _project()["version"] == VERSION
-    assert chassis_sim.__version__ == VERSION
     citation = CITATION.read_text(encoding="utf-8")
     match = re.search(r'^version:\s*"([^"]+)"', citation, re.MULTILINE)
     assert match, "CITATION.cff 的 version 必须是带引号的字符串"

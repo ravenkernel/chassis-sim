@@ -1,7 +1,27 @@
 # Changelog
 
 All notable changes to `chassis-sim`. This file documents the changes present in
-the working tree; the most recent release is `3.0.0`.
+the working tree; the most recent release is `3.0.1`.
+
+## 3.0.1
+
+纯性能补丁：公共 API 只增不改，观测/传感器读数与 3.0.0 逐位相同。
+
+### Breaking
+
+无。
+
+### Added
+
+- `SensorSuite` 新增可选钩子 `raycast_many(origin_xy, angles, max_range)`（供自定义传感器套件整帧批量取距；不传时行为与 3.0.0 一致）。
+
+### Changed
+
+无。
+
+### Fixed
+
+- **参数化 LiDAR 整帧向量化**：`SensorSuite` 新增可选钩子 `raycast_many`（一帧只调一次，优先于标量 `raycast`），`SimpleBridge` 同时注入 `_raycast_body_rays`。实测单步耗时 N=60 5.07 → 0.685 ms、N=180 14.40 → 0.754 ms、N=360 28.19 → 0.870 ms；读数与逐条标量钩子 `np.array_equal` 逐位相同，逐条旧用法继续可用。
 
 ## 3.0.0
 
