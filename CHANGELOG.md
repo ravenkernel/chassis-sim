@@ -1,7 +1,28 @@
 # Changelog
 
 All notable changes to `chassis-sim`. This file documents the changes present in
-the working tree; the most recent release is `3.0.2`.
+the working tree; the most recent release is `3.0.3`.
+
+## 3.0.3
+
+逐回合地图工厂：手写场景也真的每回合换图，基准表因此能给出置信区间。
+
+### Breaking
+
+无。
+
+### Added
+
+- `chassis_sim.scenarios.roll_obstacles(obstacles, roll)`：把「同族不同款」的障碍重掷（±0.10 m / ±0.10 rad 位姿抖动、15% 概率丢弃、保底 6 个）做成公开函数；env 默认场景与逐回合工厂共用这一份实现，参数是模块级常量 `OBSTACLE_JITTER_XY` / `OBSTACLE_JITTER_THETA` / `OBSTACLE_DROP_PROB` / `OBSTACLE_MIN_KEEP`。
+
+### Changed
+
+- `scenario_reset_options_factory(...)` 对手写（core）场景不再返回 YAML 原图：每回合按种子重掷障碍（参考路径仍固定），与 env 默认场景路径同源。`dense_static` 因此从「9 个回合 1 张图」变成 9 张图，`benchmark` 的 `maps_independent` 转 True、`success_ci` 给出真区间（实测 pp 3 种子 × 3 回合：distinct 9/9、success 1.0、ci 0.299、mean_steps 102.0）。单次 `scenario_to_reset_options(...)` 行为不变，仍原样返回 YAML 里的地图。
+
+### Fixed
+
+- 3.0.0/3.0.1/3.0.2 里 `dense_static` 这类手写障碍场景走 `benchmark` 时是「一张图重放 n 次」：`distinct_maps` 恒为 1、`maps_independent` 恒 False、`success_ci` 恒 None，而同一场景走 `env.reset(seed=...)` 与 `cs.evaluate` 是会重掷的 —— 两条路径口径不一致。现在两条路径共用 `roll_obstacles`，并有测试锁住「同 roll 同地图」。
+
 
 ## 3.0.2
 

@@ -723,7 +723,7 @@ roundtrip: True
 | `foldback_reverse` | planning | 10–16 | 宽航向范围与折返 |
 | `maze_grid` | planning | 网格 | 1.0 m 网格、填充率 0.4–0.7 |
 
-`cs.make(..., scenario=name)` 会附加该场景的 `default_reset_options`，所以 `reset(seed=0)` 用它的固定地图。不传场景就得到快速开始里那张每次重掷的 `dense_static` 默认图。`cs.load_scenario(name)` 返回解析后的 `Scenario` 记录；拼错名字会抛 `ScenarioNotFoundError`，不会静默兜底。`chassis_sim.scenarios.scenario_reset_options_factory(name, base_seed=0)` 返回一个每回合产新地图的可调用对象——基准就是这么用的。上表的障碍数是 YAML 的定义值。`dense_static` 的默认重掷每次 reset 会施加最多 0.10 m 的位姿抖动，并以 0.15 的概率丢弃障碍（至少保留六个），所以它的实时 bridge 暴露的形状可能更少；场景默认值与显式 `options` 均原样使用。
+`cs.make(..., scenario=name)` 会附加该场景的 `default_reset_options`，所以 `reset(seed=0)` 用它的固定地图。不传场景就得到快速开始里那张每次重掷的 `dense_static` 默认图。`cs.load_scenario(name)` 返回解析后的 `Scenario` 记录；拼错名字会抛 `ScenarioNotFoundError`，不会静默兜底。`chassis_sim.scenarios.scenario_reset_options_factory(name, base_seed=0)` 返回一个每回合产新地图的可调用对象——基准就是这么用的。对手写（core）场景，它与默认场景走同一套障碍重掷，所以回合之间是独立样本而参考路径保持不变；单次 `scenario_to_reset_options(...)` 仍原样返回 YAML 里的地图。上表的障碍数是 YAML 的定义值。`dense_static` 的默认重掷每次 reset 会施加最多 0.10 m 的位姿抖动，并以 0.15 的概率丢弃障碍（至少保留六个），所以它的实时 bridge 暴露的形状可能更少；场景默认值与显式 `options` 均原样使用。
 
 ## 渲染
 

@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import itertools
 import math
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +54,7 @@ from chassis_sim.scenarios.scenario import (
 
 __all__ = [
     "ScenarioResetOptionsFactory",
+    "roll_obstacles",
     "scenario_reset_options_factory",
     "scenario_to_reset_options",
 ]
@@ -61,6 +63,45 @@ _PLANNING_IMPORT_HINT = (
     "场景 {name!r} 需要 Hybrid-A* 地图生成器（chassis_sim.planning），它依赖 numba。"
     "请先安装 planning extra：pip install chassis-sim[planning]"
 )
+
+#: core 场景障碍的逐回合重掷参数（env 默认场景与 factory 共用这一份）
+OBSTACLE_JITTER_XY = 0.10
+OBSTACLE_JITTER_THETA = 0.10
+OBSTACLE_DROP_PROB = 0.15
+OBSTACLE_MIN_KEEP = 6
+
+
+def roll_obstacles(
+    obstacles: Sequence[Mapping[str, Any]], roll: int
+) -> list[dict[str, Any]]:
+    """在场景自带障碍上确定性地重掷一张「同族不同款」的地图。
+
+    抖动 ±0.10 m / ±0.10 rad（OBSTACLE_JITTER_XY / OBSTACLE_JITTER_THETA），
+    并按 15% 概率丢障碍（保底 OBSTACLE_MIN_KEEP 个，否则密集场景会越掷越稀）。
+
+    同一个 roll 逐位可复现；shape 等字段原样保留，只动 state。env 的默认场景路径
+    与 ScenarioResetOptionsFactory 都走这里，所以「不传 seed 的 reset()」与
+    「evaluate 的逐回合工厂」掷出的是同一族地图。
+    """
+    if not obstacles:
+        return []
+    rng = np.random.default_rng(int(roll))
+    out: list[dict[str, Any]] = []
+    for item in obstacles:
+        if (
+            len(obstacles) - len(out) > OBSTACLE_MIN_KEEP
+            and rng.random() < OBSTACLE_DROP_PROB
+        ):
+            continue
+        state = [float(_v) for _v in item.get("state", (0.0, 0.0, 0.0))]
+        state[0] += float(rng.uniform(-OBSTACLE_JITTER_XY, OBSTACLE_JITTER_XY))
+        state[1] += float(rng.uniform(-OBSTACLE_JITTER_XY, OBSTACLE_JITTER_XY))
+        if len(state) > 2:
+            state[2] += float(
+                rng.uniform(-OBSTACLE_JITTER_THETA, OBSTACLE_JITTER_THETA)
+            )
+        out.append({**item, "state": state})
+    return out
 
 
 def scenario_to_reset_options(
@@ -228,10 +269,12 @@ class ScenarioResetOptionsFactory:
         result = evaluate(env_factory, controller, episodes=10, reset_options=factory)
         # 回合 i 的地图 = MapGenerator(default_rng(base_seed + i))
 
-    core 场景（`straight` / `waypoints`，障碍与路径写死在 YAML 里）**没有**随机
-    成分：指纹恒定，n 个回合仍是同一张图（`EvalResult.maps_independent` 为
-    False，evaluate 会打 `[WARN][eval]`）。要独立地图只能用 planning 场景
-    （`requires: planning`，即 `path.type == "stage"`）。
+    core 场景（障碍与路径写死在 YAML 里）把随机成分放在 `roll_obstacles()`：
+    障碍按种子抖动 ±0.10 m / ±0.10 rad、15% 概率丢弃（保底 6 个），与 env
+    默认场景路径同源，所以不同回合是同一族里的不同张图。路径本身仍固定 ⇒
+    没有障碍的场景（`straight`）指纹恒定、`EvalResult.maps_independent` 为
+    False，evaluate 会打 `[WARN][eval]`。planning 场景（`path.type == "stage"`）
+    由 MapGenerator 按种子生成整张图。
 
     退化策略（`MapGenerationError`，例如某个种子下 Hybrid-A* 无解）
     ---------------------------------------------------------------
@@ -284,6 +327,12 @@ class ScenarioResetOptionsFactory:
                     raise
                 last_error = exc
                 continue
+            if self.scenario.path.type != "stage":
+                # core 场景的地图写死在 YAML 里：路径固定，障碍按种子重掷
+                options = dict(options)
+                options["obstacles"] = roll_obstacles(
+                    options.get("obstacles") or [], seed
+                )
             self.episodes += 1
             return options
 

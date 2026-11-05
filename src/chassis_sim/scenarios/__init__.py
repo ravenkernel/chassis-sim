@@ -76,6 +76,7 @@ from chassis_sim.scenarios.loader import (
 )
 from chassis_sim.scenarios.reset_options import (
     ScenarioResetOptionsFactory,
+    roll_obstacles,
     scenario_reset_options_factory,
     scenario_to_reset_options,
 )
@@ -109,6 +110,7 @@ __all__ = [
     "list_scenarios",
     "load_curriculum",
     "load_scenario",
+    "roll_obstacles",
     "scenario_reset_options_factory",
     "scenario_to_reset_options",
 ]

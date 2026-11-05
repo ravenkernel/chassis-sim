@@ -75,11 +75,8 @@ _DEFAULT_CHASSIS_PARAMS: dict[str, tuple[str, ...]] = {
 # 默认世界边界（与 config/env.yaml 的 world 段、SimpleBridge 默认值一致）
 _DEFAULT_WORLD_BOUNDS = (0.0, 10.0, 0.0, 10.0)
 
-#: 默认场景重掷：位置/朝向抖动幅度（米/弧度）、丢障碍概率与保底个数。
-_OBSTACLE_JITTER_XY = 0.10
-_OBSTACLE_JITTER_THETA = 0.10
-_OBSTACLE_DROP_PROB = 0.15
-_OBSTACLE_MIN_KEEP = 6
+#: 默认场景重掷参数住在 chassis_sim.scenarios.reset_options.roll_obstacles，
+#: 与 evaluate/benchmark 的逐回合工厂共用同一份（勿在此处再定义一套）。
 
 #: matplotlib 的非交互后端：human 渲染在这些后端上只画不刷屏。
 _NON_INTERACTIVE_BACKENDS = frozenset(
@@ -2169,40 +2166,12 @@ class ChassisSimEnv(gym.Env):
 
             self._default_scenario_obj = load_scenario(str(self._default_scenario_name))
         roll = self._roll_seed(seed)
-        from chassis_sim.scenarios import scenario_to_reset_options
+        from chassis_sim.scenarios import roll_obstacles, scenario_to_reset_options
 
         options = dict(scenario_to_reset_options(self._default_scenario_obj, seed=roll))
         obstacles = list(options.get("obstacles") or [])
-        options["obstacles"] = self._roll_obstacles(obstacles, roll)
+        options["obstacles"] = roll_obstacles(obstacles, roll)
         return options
-
-    def _roll_obstacles(
-        self, obstacles: Sequence[Mapping[str, Any]], roll: int
-    ) -> list[dict[str, Any]]:
-        """在场景自带障碍上确定性地重掷一张"同族不同款"的地图。
-
-        抖动 ±0.10 m / ±0.10 rad，并按 15% 概率丢障碍（保底 6 个，否则密集场景
-        会越掷越稀）。同一 roll 逐位可复现；shape 字典原样保留，只动 state。
-        """
-        if not obstacles:
-            return []
-        rng = np.random.default_rng(int(roll))
-        out: list[dict[str, Any]] = []
-        for item in obstacles:
-            if (
-                len(obstacles) - len(out) > _OBSTACLE_MIN_KEEP
-                and rng.random() < _OBSTACLE_DROP_PROB
-            ):
-                continue
-            state = [float(_v) for _v in item.get("state", (0.0, 0.0, 0.0))]
-            state[0] += float(rng.uniform(-_OBSTACLE_JITTER_XY, _OBSTACLE_JITTER_XY))
-            state[1] += float(rng.uniform(-_OBSTACLE_JITTER_XY, _OBSTACLE_JITTER_XY))
-            if len(state) > 2:
-                state[2] += float(
-                    rng.uniform(-_OBSTACLE_JITTER_THETA, _OBSTACLE_JITTER_THETA)
-                )
-            out.append({**item, "state": state})
-        return out
 
     # ── 渲染（3.0.0 W1）─────────────────────────────────────────────
     def render(self):

@@ -143,25 +143,64 @@ def test_missing_numba_does_not_affect_core_scenes(monkeypatch) -> None:
 
 # ── scenario_reset_options_factory：每回合重掷一张地图 ───────────────
 def _map_key(options: dict) -> str:
-    """把一张地图压成可比较的字符串（路径 + 每个障碍的名字/位姿）。"""
+    """把一张地图压成可比较的字符串（路径 + 每个障碍的名字/位姿）。
+
+    障碍既可能是 env 用的 dict（{shape, state}），也可能是带 .shape/.state
+    的对象；两种都要取到真位姿，否则所有障碍都会折叠成 "dict[]"。
+    """
     path = np.round(np.asarray(options["path_waypoints"], dtype=float), 6)
     parts = [path.tobytes().hex()]
     for obstacle in options["obstacles"]:
-        shape = getattr(obstacle, "shape", obstacle)
-        state = np.round(
-            np.asarray(getattr(shape, "state", ()), dtype=float), 6
-        ).tolist()
-        parts.append(f"{getattr(shape, 'name', type(shape).__name__)}{state}")
+        raw = (
+            obstacle
+            if isinstance(obstacle, dict)
+            else getattr(obstacle, "__dict__", {})
+        )
+        shape = raw.get("shape", obstacle)
+        if isinstance(shape, dict):
+            name = shape.get("name", "dict")
+            state = raw.get("state", ())
+        else:
+            name = getattr(shape, "name", type(shape).__name__)
+            state = getattr(raw, "state", getattr(shape, "state", ()))
+        values = np.round(np.asarray(state, dtype=float), 6).tolist()
+        parts.append(f"{name}{values}")
     return "|".join(parts)
 
 
+def _same_path(left: dict, right: dict) -> bool:
+    return bool(np.array_equal(left["path_waypoints"], right["path_waypoints"]))
+
+
 @pytest.mark.parametrize("name", CORE_SCENES)
-def test_factory_on_core_scene_repeats_the_same_map(name: str) -> None:
-    """core 场景的地图写死在 YAML 里 ⇒ 重掷也是同一张图，factory 不掩盖这点。"""
+def test_factory_on_core_scene_rerolls_obstacles_only(name: str) -> None:
+    """core 场景的路径固定、障碍按回合重掷；没有障碍的场景只能是同一张图。"""
+    scenario = load_scenario(name)
     factory = scenario_reset_options_factory(name)
-    keys = [_map_key(factory(i)) for i in range(3)]
-    assert keys[0] == keys[1] == keys[2]
+    options = [factory(i) for i in range(3)]
+    keys = [_map_key(item) for item in options]
+    authored = len(scenario.obstacles)
+    if authored:
+        assert len(set(keys)) == 3  # 同一族里的三张不同图
+        assert all(_same_path(options[0], item) for item in options)
+        floor = min(reset_mod.OBSTACLE_MIN_KEEP, authored)
+        kept = [len(item["obstacles"]) for item in options]
+        assert all(floor <= count <= authored for count in kept)
+    else:
+        assert keys[0] == keys[1] == keys[2]
     assert factory.stats == {"attempts": 3, "retries": 0, "failures": 0, "episodes": 3}
+
+
+def test_env_default_scene_and_factory_share_one_roll() -> None:
+    """env 默认场景与 factory 共用 roll_obstacles：同一 roll ⇒ 同一张图。"""
+    env = ChassisSimEnv("ackermann")
+    try:
+        scene = env._default_scene(7)
+    finally:
+        env.close()
+    options = scenario_reset_options_factory("dense_static", base_seed=7)(0)
+    assert scene["obstacles"] == options["obstacles"]
+    assert np.array_equal(scene["path_waypoints"], options["path_waypoints"])
 
 
 def test_factory_on_planning_scene_gives_distinct_maps_and_is_seeded() -> None:
