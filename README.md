@@ -5,6 +5,7 @@ English | [简体中文](https://github.com/ravenkernel/chassis-sim/blob/main/RE
 [![CI](https://github.com/ravenkernel/chassis-sim/actions/workflows/ci.yml/badge.svg)](https://github.com/ravenkernel/chassis-sim/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue)](https://github.com/ravenkernel/chassis-sim)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/ravenkernel/chassis-sim/blob/main/examples/quickstart.ipynb)
 
 **A lightweight, reproducible workbench for chassis control, observations, and rewards** — Ackermann steering, differential drive, and mecanum, with a NumPy core, behind a Gymnasium API.
 
@@ -32,6 +33,19 @@ Three boundaries we do not hide:
 1. **Chassis-level kinematics, not wheel-level rigid-body dynamics.** The state is `(x, y, θ)` and each step integrates a constant twist in closed form. The wheel layer reports steering angles and wheel speeds for logging and downstream control; it never feeds back into the integrator. There is no suspension, no slip, no load transfer, and no 3D.
 2. **Collision is a geometric predicate.** Rectangle/circle overlap plus optional swept sampling. A collision is a boolean that terminates the episode; there are no contact forces, no friction, and no pushing.
 3. **No GPU and no built-in vectorized batch.** Use Gymnasium vector wrappers if you need parallelism; the library itself does not provide a batched simulator.
+
+## How it compares
+
+The projects below are not worse — they answer a different question. The question here is how long it takes to get from one controller, one observation layout, or one reward term to a number you trust.
+
+| Alternative | What it is built for | What this package does instead |
+| --- | --- | --- |
+| PyBullet, MuJoCo, Gazebo | rigid-body contact dynamics, joints, force and torque sensors | closed-form twist integration plus a geometric collision predicate; nothing to compile or install |
+| CARLA, DonkeyCar (Unity-based) | photorealistic cameras and vehicle dynamics inside a game engine | one top-down matplotlib frame from `render()` inside a CPU-only process |
+| ir-sim and similar 2D mobile-robot simulators | 2D kinematics plus plotting for mobile robots | three named chassis behind one normalized action space, with a finite observation box per segment |
+| general Gymnasium benchmark suites | standard tasks with published leaderboards | a benchmark protocol you run on your own baselines, with the sample-independence check built in |
+
+If the question is about contact forces, tire slip, or perception, take the first two rows. If it is about whether your tracker still works after you move one reward term, the engines cost more time to install than the experiment costs to run.
 
 ## At a glance
 
@@ -676,10 +690,11 @@ python -m chassis_sim benchmark --scenarios obstacles_sparse --seeds 0 1 2 --epi
 
 ## Examples
 
-Seven runnable scripts live in `examples/`. Each one prints what it demonstrates and needs only the extras named above.
+Seven runnable scripts and one notebook live in `examples/`. Each one prints what it demonstrates and needs only the extras named above.
 
 | Script | What it shows |
 | --- | --- |
+| `examples/quickstart.ipynb` | the same tour as a notebook, or in Colab: three chassis, observation segments, seeded resets, a rendered frame, two scored controllers |
 | `examples/scenario_demo.py` | the three planner-free scenarios driven through `cs.make` |
 | `examples/sensors_demo.py` | IMU, wheel odometry, and a parameterized LiDAR with latency and dropout |
 | `examples/dynamic_demo.py` | `dynamic_crossing`: the same open-loop action sequence with static and with moving obstacles |

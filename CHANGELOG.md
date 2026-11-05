@@ -1,7 +1,28 @@
 # Changelog
 
 All notable changes to `chassis-sim`. This file documents the changes present in
-the working tree; the most recent release is `3.0.1`.
+the working tree; the most recent release is `3.0.2`.
+
+## 3.0.2
+
+元信息与上手路径：公共 API、观测、传感器与渲染行为一律未动。
+
+### Breaking
+
+无。
+
+### Added
+
+- `examples/quickstart.ipynb`：可在 Colab 一键打开的上手 notebook（三种底盘各跑 30 步、观测九段、seed 重置与重掷、渲染一帧、pp/dwa 打分）。README 两份顶部加 Open in Colab 徽章，Examples 表加一行。
+- README 两份新增 How it compares（和别的方案比）小节：与 PyBullet·MuJoCo·Gazebo、CARLA·DonkeyCar、ir-sim 一类 2D 仿真、通用 Gymnasium 基准套件的分工对照。
+
+### Changed
+
+- PyPI 元信息与 GitHub 对齐：`description` 换成轻量 Gymnasium 环境的一句话（纯 NumPy、CPU、免装仿真器），`keywords` 7 → 14 个，`project_urls` 新增 `Documentation`（指向 quickstart notebook）。
+
+### Fixed
+
+无。
 
 ## 3.0.1
 

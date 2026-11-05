@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "chassis-sim"
-version = "3.0.1"
-description = "Gymnasium environments for Ackermann, differential-drive and mecanum chassis"
+version = "3.0.2"
+description = "Lightweight Gymnasium environments for Ackermann, differential-drive and mecanum chassis — pure NumPy, CPU-only, no simulator install"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "ravenkernel", email = "30620187+ravenkernel@users.noreply.github.com" }]
@@ -30,6 +30,13 @@ keywords = [
     "ackermann",
     "differential-drive",
     "mecanum",
+    "robot-simulation",
+    "autonomous-driving",
+    "kinematics",
+    "path-tracking",
+    "pure-pursuit",
+    "dwa",
+    "control-systems",
 ]
 dependencies = [
     "numpy>=1.24",
@@ -45,6 +52,7 @@ Homepage = "https://github.com/ravenkernel/chassis-sim"
 Repository = "https://github.com/ravenkernel/chassis-sim"
 Issues = "https://github.com/ravenkernel/chassis-sim/issues"
 Changelog = "https://github.com/ravenkernel/chassis-sim/releases"
+Documentation = "https://colab.research.google.com/github/ravenkernel/chassis-sim/blob/main/examples/quickstart.ipynb"
 
 [project.optional-dependencies]
 # Numba 0.60.0 是第一个提供 NumPy 2.0 二进制支持的版本；更早的 numba 与

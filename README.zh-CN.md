@@ -5,6 +5,7 @@
 [![CI](https://github.com/ravenkernel/chassis-sim/actions/workflows/ci.yml/badge.svg)](https://github.com/ravenkernel/chassis-sim/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue)](https://github.com/ravenkernel/chassis-sim)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/ravenkernel/chassis-sim/blob/main/examples/quickstart.ipynb)
 
 **轻量、可复现的底盘控制 / 观测 / 奖励工作台** —— 阿克曼、差速、麦轮三种底盘，NumPy 核心，Gymnasium API。
 
@@ -32,6 +33,19 @@ chassis-sim 面向的循环是：改一个控制器、改一段观测布局、�
 1. **底盘级运动学，不是轮级刚体动力学。** 状态是 `(x, y, θ)`，每步闭式积分一个常 twist。轮级层只报告转向角与轮速，供日志与下游控制使用，绝不回灌积分器。没有悬架、没有滑移、没有载荷转移、没有 3D。
 2. **碰撞是几何判据。** 矩形/圆重叠，加上可选的扫掠采样。碰撞是一个终止回合的布尔值；没有接触力、没有摩擦、没有推挤。
 3. **没有 GPU，也没有内置的向量化批量。** 需要并行就用 Gymnasium 的向量封装；库本身不提供批量仿真器。
+
+## 和别的方案比
+
+下面这些项目并不差，只是回答的问题不同。这里回答的问题是：从改一个控制器、一段观测布局、或一项奖励，到一个可信的数字，需要多久。
+
+| 另一类方案 | 它擅长的事 | 本包的做法 |
+| --- | --- | --- |
+| PyBullet、MuJoCo、Gazebo | 刚体接触动力学、关节、力/力矩传感器 | 闭式 twist 积分 + 几何碰撞判据；不需要编译，也不需要装引擎 |
+| CARLA、DonkeyCar（基于 Unity） | 游戏引擎里的照片级相机与整车动力学 | 一次 `render()` 给出俯视 matplotlib 画面，纯 CPU 进程 |
+| ir-sim 一类 2D 移动机器人仿真 | 2D 运动学 + 绘图 | 三种具名底盘共用一套归一化动作空间，每段观测都有有限 Box |
+| 通用 Gymnasium 基准套件 | 标准任务与公开排行榜 | 在自己基线上跑的基准协议，样本独立性检查内置 |
+
+要问接触力、轮胎滑移或感知，看前两行。要问「改了一项奖励之后跟踪器还好不好用」，装引擎的时间比跑实验的时间还长。
 
 ## 一览
 
@@ -653,10 +667,11 @@ python -m chassis_sim benchmark --scenarios obstacles_sparse --seeds 0 1 2 --epi
 
 ## 示例
 
-`examples/` 下有七个可直接运行的脚本。每个都会打印它所演示的内容，且只需要上面提到的对应 extra。
+`examples/` 下有七个可直接运行的脚本和一个 notebook。每个都会打印它所演示的内容，且只需要上面提到的对应 extra。
 
 | 脚本 | 演示什么 |
 | --- | --- |
+| `examples/quickstart.ipynb` | 同样的导览做成 notebook，可直接在 Colab 打开：三种底盘、观测分段、seed 重置、渲染一帧、两个控制器的打分 |
 | `examples/scenario_demo.py` | 用 `cs.make` 驱动三个不依赖规划器的场景 |
 | `examples/sensors_demo.py` | IMU、轮速计，以及带延迟与丢帧的参数化 LiDAR |
 | `examples/dynamic_demo.py` | `dynamic_crossing`：同一段开环动作在静态与动态障碍下的对照 |
