@@ -576,7 +576,7 @@ ccd=True:  [True, False]
 
 `cs.evaluate(env, controller=None, *, episodes, seed=0, max_steps=None, reset_options=None, labels=None, allow_mismatch=False)` 跑闭环回合，返回 `EvalResult`，含 `n`、`successes`、`collisions`、`timeouts`、三个比率、`mean_steps`、`mean_return`、`min_obstacle_clearance`、`success_interval`、`success_ci`、`map_fingerprints`、`distinct_maps`、`maps_independent`、`same_map_repeated`。
 
-`success_ci` 是 Wilson 95% 区间的半宽。只有回合是独立样本时它才有意义：当 `distinct_maps < n` 时，基准层返回 `None` 并置 `maps_independent=False`，而不是拿重复地图算出一个数字。
+`success_ci` 是 Wilson 95% 区间的保守半宽 —— 取观测比率到区间两端两个单侧距离中较大的那个。只有回合是独立样本时它才有意义：当 `distinct_maps < n` 时，基准层返回 `None` 并置 `maps_independent=False`，而不是拿重复地图算出一个数字。
 
 ```python
 import chassis_sim as cs
@@ -615,8 +615,8 @@ distinct_maps: 10 maps_independent: True ci: 0.278
 python -m chassis_sim benchmark \
   --scenarios obstacles_sparse \
   --seeds 0 1 2 \
-  --episodes 5 \
-  --max-steps 300 \
+  --episodes 3 \
+  --max-steps 250 \
   --out /tmp/benchmark.md
 ```
 
@@ -624,12 +624,12 @@ python -m chassis_sim benchmark \
 
 | 策略 | 成功率 | 95% CI | 碰撞 | 平均步数 | 不同地图 | 独立 |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| `zero` | 0.0% | ±20.4% | 0 | 300.0 | 15 | True |
-| `random` | 0.0% | ±20.4% | 6 | 242.8 | 15 | True |
-| `pp` | 100.0% | ±20.4% | 0 | 88.9 | 15 | True |
-| `dwa` | 100.0% | ±20.4% | 0 | 74.4 | 15 | True |
+| `zero` | 0.0% | ±29.9% | 0 | 250.0 | 9 | True |
+| `random` | 0.0% | ±29.9% | 6 | 183.8 | 9 | True |
+| `pp` | 100.0% | ±29.9% | 0 | 94.6 | 9 | True |
+| `dwa` | 100.0% | ±29.9% | 0 | 76.2 | 9 | True |
 
-最值得看的是最后一列。十五个回合产生了十五张不同地图，所以 ±20.4% 的 Wilson 半宽是对十五个独立样本的陈述。现在跑 `benchmark` 在省略 `--scenarios` 时的默认场景：
+最值得看的是最后一列。九个回合产生了九张不同地图，所以 ±29.9% 的 Wilson 半宽是对九个独立样本的陈述。现在跑 `benchmark` 在省略 `--scenarios` 时的默认场景：
 
 ```python
 from chassis_sim.eval import benchmark
@@ -650,6 +650,50 @@ dwa    success=100% ci=— distinct_maps=1 independent=False
 ```
 
 `straight` 是单张固定地图。工具拒绝为它编造置信区间：`success_ci` 是 `None`、`maps_independent` 是 `False`，markdown 输出打印 `—`。`maps_independent=False` 的表是调试辅助，不是可以引用的结果。`benchmark` 在 seed 少于三个时还会警告并置 `protocol_ok=False`。
+
+### 难度阶梯
+
+`obstacles_sparse` 上两个基线都触顶 100%，所以它更像冒烟测试而不是基准。同一协议铺在五个由易到难的场景上 —— 3 个 seed × 3 个回合、`max_steps=250`、不带执行器模型：
+
+| 场景 | 策略 | n | 成功率 | 95% CI | 碰撞 | 平均步数 | 不同地图 | 独立 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `obstacles_sparse` | `pp` | 9 | 100.0% | ±29.9% | 0 | 94.6 | 9 | True |
+| `obstacles_sparse` | `dwa` | 9 | 100.0% | ±29.9% | 0 | 76.2 | 9 | True |
+| `obstacles_dense` | `pp` | 9 | 88.9% | ±32.4% | 1 | 84.0 | 9 | True |
+| `obstacles_dense` | `dwa` | 9 | 100.0% | ±29.9% | 0 | 73.2 | 9 | True |
+| `corridor_medium`（0.8 m） | `pp` | 9 | 66.7% | ±31.2% | 3 | 47.6 | 9 | True |
+| `corridor_medium`（0.8 m） | `dwa` | 9 | 88.9% | ±32.4% | 1 | 53.4 | 9 | True |
+| `corridor`（0.6 m） | `pp` | 9 | 22.2% | ±32.5% | 7 | 25.6 | 9 | True |
+| `corridor`（0.6 m） | `dwa` | 9 | 33.3% | ±31.2% | 6 | 29.1 | 9 | True |
+| `dynamic_crossing` | `pp` | 9 | 0.0% | — | 9 | 13.0 | 1 | False |
+| `dynamic_crossing` | `dwa` | 9 | 0.0% | — | 9 | 13.0 | 1 | False |
+
+`corridor` 与 `corridor_medium` 是同样的两堵墙，只把缝隙从 0.6 m 放宽到 0.8 m，所以这四行的差别只有自由空间宽度：`pp` 从 22.2% 到 66.7%，`dwa` 从 33.3% 到 88.9%。缝隙越窄 `dwa` 越占优，因为减速换来的正是余量 —— 这也是它在那两行走得更慢的原因。`dynamic_crossing` 的 `—` 是应得的：它是一张写死的地图加上会移动的横穿障碍，九个回合不是九个独立样本，工具不报价区间。
+
+### 被控对象保真度
+
+`dynamics="wheel"` 打开一阶执行器滞后、速度死区与轮滑（命令行是 `--dynamics none|limits|wheel`；`none` 那一列就是上面的表）。同一协议：
+
+| 场景 | 策略 | `none` 成功率 / 步数 | `wheel` 成功率 / 步数 |
+| --- | --- | ---: | ---: |
+| `obstacles_sparse` | `pp` | 100.0% / 94.6 | 88.9% / 97.3 |
+| `obstacles_sparse` | `dwa` | 100.0% / 76.2 | 88.9% / 80.4 |
+| `obstacles_dense` | `pp` | 88.9% / 84.0 | 77.8% / 84.1 |
+| `obstacles_dense` | `dwa` | 100.0% / 73.2 | 100.0% / 78.3 |
+| `corridor_medium` | `pp` | 66.7% / 47.6 | 66.7% / 54.0 |
+| `corridor_medium` | `dwa` | 88.9% / 53.4 | 88.9% / 58.0 |
+| `corridor` | `pp` | 22.2% / 25.6 | 22.2% / 29.8 |
+| `corridor` | `dwa` | 33.3% / 29.1 | 33.3% / 32.1 |
+| `dynamic_crossing` | `pp` | 0.0% / 13.0 | 0.0% / 21.0 |
+| `dynamic_crossing` | `dwa` | 0.0% / 13.0 | 0.0% / 21.0 |
+
+滞后在余量薄的地方吃掉成功率 —— `obstacles_sparse` 两个控制器都从 100% 掉到 88.9%，`obstacles_dense` 的 `pp` 从 88.9% 掉到 77.8% —— 并且处处要多花时间，因为底盘比规划晚一步才到指令速度：活下来的回合平均步数涨 3–16%。窄走廊成功率不变、只是变慢，它本来就以失败为主。
+
+### 传感器退化
+
+`sensor_noise_std` 与 `sensor_latency_steps` 会给车挂上前后各一支 60 线 `Lidar`，并带上指定的退化；延迟帧走零阶保持：`sensor_latency_steps=1` 时，第 k+1 步读到的帧与无延迟时第 k 步读到的帧逐位相同。
+
+这两个旋钮**不会**改动上面两张表。`pp` 与 `dwa` 从不读扫描 —— 它们吃的是位姿与参考路径 —— 所以传感器退化只对你自己写的、读 `info["front"]["scan"]` 的策略有意义。挂着传感器的代价很小：参考机上两支 60 线 LiDAR 给 0.47 ms 的无传感器单步增加约 0.23 ms（每帧一次批量射线投射，见传感器一节）。
 
 ## 命令行
 
@@ -703,16 +747,102 @@ first line: delta_max: 0.526
 roundtrip: True
 ```
 
-对 3.0.0 行为最要紧的字段是 `default_scenario`、`integration_substeps`、`ccd`、`seed`、`sensor_seed`。`seed` 是环境自建 bridge 时的运行种子；`reset(seed=...)` 显式设置本次 reset 的种子，`sensor_seed` 未设置时由 `seed` 派生。
+最值得先看的字段是 `default_scenario`、`integration_substeps`、`ccd`、`seed`、`sensor_seed`。
+`seed` 是环境自建 bridge 时的运行种子；`reset(seed=...)` 显式设置本次 reset 的种子，`sensor_seed` 未设置时由 `seed` 派生。
+
+下面的字段表由 `python tools/gen_config_docs.py` 从 dataclass 生成，默认值不会与代码脱节。
+
+<!-- BEGIN config-reference (generated by tools/gen_config_docs.py) -->
+
+**底盘与动作映射**
+
+| 字段 | 默认值 | 说明 |
+| --- | --- | --- |
+| `chassis` | `ackermann` | 环境自建桥时的底盘类型：ackermann、diff_drive 或 mecanum。 |
+| `wheelbase` | `0.145` | 轴距（米），决定曲率映射出的前轮转角。 |
+| `delta_max` | `0.526` | 前轮转角上限（弧度），curvature_action 为 false 时使用。 |
+| `kappa_max` | `4.0` | 曲率上限（1/m），curvature_action 为 true 时使用。 |
+| `curvature_action` | `False` | 把 action[0] 映射成曲率而不是前轮转角。 |
+| `v_min` | `-0.6` | 倒车速度上限（m/s）。 |
+| `v_max` | `1.2` | 前进速度上限（m/s）。 |
+
+**场地与参考路径**
+
+| 字段 | 默认值 | 说明 |
+| --- | --- | --- |
+| `dt` | `0.1` | 控制周期（秒），render_fps 由它推导。 |
+| `max_steps` | `1000` | 单回合步数上限。 |
+| `world_bounds` | `None` | 场地范围 (xmin, ymin, xmax, ymax)；None 用 10×10 m 默认值。 |
+| `path_lookahead` | `20.0` | 观测沿参考路径向前读的距离（米）。 |
+| `max_path_points` | `30` | 观测携带的路径点数。 |
+| `path_power` | `2.0` | 重采样指数；大于 1 让点更密地落在车附近。 |
+| `extrapolate_path` | `True` | 参考路径用尽后继续填满路径窗口。 |
+| `path_fill_mode` | `extrapolate` | 缺失路径点的填充方式：extrapolate 或 sentinel。 |
+| `path_lookahead_floor` | `1.0` | 近终点时的最小前瞻距离（米）。 |
+| `path_deviation_limit` | `4.0` | 偏离路径多远终止回合（米）。 |
+
+**终点与回合记账**
+
+| 字段 | 默认值 | 说明 |
+| --- | --- | --- |
+| `goal_dist_threshold` | `0.3` | 判定到达终点的距离阈值（米）。 |
+| `goal_heading_tolerance` | `0.6` | 终点处仍算到达的航向误差（弧度）。 |
+| `goal_end_wp_count` | `6` | 终点航向取平均所用的末尾路点数。 |
+| `goal_end_wp_margin` | `2` | 求平均前跳过的路点数，避开末段的噪声。 |
+| `curriculum_enabled` | `True` | 暴露训练循环驱动的课程钩子。 |
+| `gear_lag_votes` | `3` | 档位方向翻转前需要的连续票数。 |
+| `envs_panel_enabled` | `True` | 允许训练面板读取逐环境实时状态。 |
+| `emit_reward_components` | `True` | 把奖励分项明细放进 info。 |
+
+**积分与执行器动力学**
+
+| 字段 | 默认值 | 说明 |
+| --- | --- | --- |
+| `integration_substeps` | `1` | 每个控制步切成多少段积分；段数越多碰撞采样越细。 |
+| `ccd` | `False` | 对每段积分做扫掠检测，而不是只测两端点。 |
+| `dynamics` | `none` | 执行器模型：none、limits 或 wheel。 |
+| `accel_max` | `0.0` | limits 与 wheel 档的加速度上限（m/s²）；0 表示关闭。 |
+| `steer_rate_max` | `0.0` | 转角速率上限（rad/s）；0 表示关闭。 |
+| `v_tau` | `0.15` | 速度一阶滞后时间常数（秒）。 |
+| `omega_tau` | `0.1` | 角速度一阶滞后时间常数（秒）。 |
+| `v_deadband` | `0.0` | 小于该幅值的速度指令不产生运动（m/s）。 |
+| `wheel_slip` | `0.0` | 被轮滑吃掉的速度比例。 |
+
+**传感器与观测**
+
+| 字段 | 默认值 | 说明 |
+| --- | --- | --- |
+| `sensors` | `None` | 传感器规格序列（Lidar、Imu、WheelOdom）；None 表示桥不带传感器。 |
+| `obs_spec` | `None` | 显式 ObsSpec；None 时按底盘生成默认向量。 |
+| `lidar_max_range` | `10.0` | 射线长度上限（米）。 |
+| `lidar_noise_std` | `0.03` | LiDAR 测距噪声标准差（米），仅在开启域随机化时生效。 |
+| `odom_drift_xy` | `0.01` | 每步里程计在 x/y 上的漂移量（米）。 |
+| `odom_drift_theta` | `0.005` | 每步里程计的航向漂移（弧度）。 |
+| `domain_rand_enabled` | `False` | 打开噪声与漂移旋钮。 |
+| `privileged_enabled` | `False` | 追加特权障碍距离向量。 |
+| `privileged_bins` | `36` | 特权距离分箱数。 |
+| `privileged_range` | `5.0` | 特权分箱的测量范围（米）。 |
+
+**场景与随机种子**
+
+| 字段 | 默认值 | 说明 |
+| --- | --- | --- |
+| `scenario` | `None` | 作为默认 reset options 附带的场景名或路径。 |
+| `default_scenario` | `dense_static` | 没有 options 也没有注入桥时环境自掷的场景；None 用直线兜底。 |
+| `seed` | `None` | 环境自建桥的运行种子；None 走全局 NumPy 状态。 |
+| `sensor_seed` | `None` | 传感器噪声种子；未设置时由 seed 派生。 |
+
+<!-- END config-reference -->
 
 ## 场景
 
-十一个场景以 YAML 提供。核心场景不需要 extra；规划场景需要 `numba`。
+十二个场景以 YAML 提供。核心场景不需要 extra；规划场景需要 `numba`。
 
 | 场景 | Extra | 障碍数（YAML 定义） | 说明 |
 | --- | --- | ---: | --- |
 | `straight` | — | 0 | `y = 5` 处 4 m 参考线 |
 | `corridor` | — | 2 | 两堵长墙之间 0.6 m 的带 |
+| `corridor_medium` | — | 2 | 0.8 m 的带；`corridor` 与开阔场地之间的中间档 |
 | `dense_static` | — | 14 | 手写默认场景 |
 | `dynamic_crossing` | — | 移动 | 0.25 m 圆以 0.3 m/s 横穿 |
 | `circle` | — | 0 | 圆形参考路径 |

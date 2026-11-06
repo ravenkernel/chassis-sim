@@ -149,6 +149,16 @@ def test_readme_python_blocks_have_a_docs_job(workflow):
     assert checker.is_file(), f"docs job 调用的脚本不存在：{checker}"
 
 
+def test_config_reference_is_checked_in_ci(workflow):
+    """README 的字段表由生成器产出，就必须由 CI 验证它没过期。"""
+    jobs = _jobs(workflow)
+    assert "docs" in jobs, "缺少 docs job"
+    runs = [step for step in jobs["docs"]["steps"] if "run" in step]
+    assert any("tools/gen_config_docs.py --check" in step["run"] for step in runs)
+    generator = WORKFLOW.parents[2] / "tools" / "gen_config_docs.py"
+    assert generator.is_file(), f"docs job 调用的生成器不存在：{generator}"
+
+
 def test_gate_tools_are_not_installed_behind_the_dev_extra(workflow):
     """mypy / pytest-cov / types-PyYAML 只由 dev extra 提供。
 

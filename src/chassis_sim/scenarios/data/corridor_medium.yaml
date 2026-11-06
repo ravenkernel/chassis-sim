@@ -1,0 +1,28 @@
+# core 场景 5：中等窄道（不需要 numba），填 0.6 m 与 1.0 m 之间的中间档。
+# 净宽 0.8 m = 上/下两条长矩形之间 y ∈ [4.60, 5.40]；车体宽 0.20 m（半宽 0.10）
+# ⇒ 两侧各留 0.30 m 余量。几何与 corridor 完全相同，只有墙位不同 —— 于是两档
+# 基准表之间的差异只来自净空，而不是别的参数被顺手改掉。
+name: corridor_medium
+description: 中等窄道 — 两侧长矩形夹出 0.8 m 净宽（x∈[0.5,6.5]，y∈[4.6,5.4]）
+world_bounds: [0.0, 10.0, 0.0, 10.0]
+obstacles:
+  - type: rectangle
+    x: 3.500
+    y: 4.500
+    length: 6.000
+    width: 0.200
+    theta: 0.000
+  - type: rectangle
+    x: 3.500
+    y: 5.500
+    length: 6.000
+    width: 0.200
+    theta: 0.000
+path:
+  type: straight
+  params:
+    start: [1.000, 5.000]
+    goal: [8.000, 5.000]
+    spacing: 0.05
+seed: 0
+requires: null

@@ -24,7 +24,14 @@ from chassis_sim.scenarios import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-CORE_SCENES = ("straight", "circle", "corridor", "dense_static", "dynamic_crossing")
+CORE_SCENES = (
+    "straight",
+    "circle",
+    "corridor",
+    "corridor_medium",
+    "dense_static",
+    "dynamic_crossing",
+)
 PLANNING_SCENES = (
     "obstacles_sparse",
     "obstacles_medium",
@@ -61,9 +68,9 @@ def _dump(tmp_path: Path, data: dict) -> Path:
 
 
 # ═════════════════════════ 列表与加载 ═════════════════════════
-def test_list_scenarios_returns_eleven_sorted_names() -> None:
+def test_list_scenarios_returns_twelve_sorted_names() -> None:
     names = list_scenarios()
-    assert len(names) == 11
+    assert len(names) == 12
     assert names == sorted(names)
     assert set(names) == set(CORE_SCENES) | set(PLANNING_SCENES)
 
@@ -350,6 +357,19 @@ def test_corridor_scene_net_width_is_0p6_metres() -> None:
         assert obstacle.length >= 6.0
 
 
+def test_corridor_medium_scene_net_width_is_0p8_metres() -> None:
+    """中间档只搬墙位：同样是两堵长墙，净宽 0.8 m。"""
+    scenario = load_scenario("corridor_medium")
+    assert len(scenario.obstacles) == 2
+    lower, upper = sorted(scenario.obstacles, key=lambda obstacle: obstacle.y)
+    gap = (upper.y - upper.width / 2.0) - (lower.y + lower.width / 2.0)
+    assert gap == pytest.approx(0.8, abs=1e-9)
+    for obstacle in scenario.obstacles:
+        assert obstacle.length >= 6.0
+    assert scenario.path.params["start"] == [1.0, 5.0]
+    assert scenario.path.params["goal"] == [8.0, 5.0]
+
+
 def test_dense_static_scene_is_dense_but_passable() -> None:
     scenario = load_scenario("dense_static")
     assert len(scenario.obstacles) >= 12
@@ -382,4 +402,4 @@ def test_planning_scenes_match_curriculum_stages() -> None:
 def test_package_data_declares_scenario_yaml() -> None:
     pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert "scenarios/data/*.yaml" in pyproject
-    assert len(list(DATA_DIR.glob("*.yaml"))) == 11
+    assert len(list(DATA_DIR.glob("*.yaml"))) == 12

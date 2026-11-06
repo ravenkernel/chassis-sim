@@ -20,7 +20,7 @@ from chassis_sim.scenarios import (
 )
 from chassis_sim.scenarios import reset_options as reset_mod
 
-CORE_SCENES = ("straight", "circle", "corridor", "dense_static")
+CORE_SCENES = ("straight", "circle", "corridor", "corridor_medium", "dense_static")
 PLANNING_SCENES = (
     "obstacles_sparse",
     "obstacles_medium",

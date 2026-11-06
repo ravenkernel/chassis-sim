@@ -231,6 +231,9 @@ def _cmd_benchmark(args: argparse.Namespace) -> int:
             episodes=args.episodes,
             chassis=args.chassis,
             max_steps=args.max_steps,
+            dynamics=args.dynamics,
+            sensor_noise_std=args.sensor_noise_std,
+            sensor_latency_steps=args.sensor_latency_steps,
             out=out,
         )
     except ValueError as exc:  # 未知车型 / 空 seeds / 重复 seed 等用户输入错误
@@ -369,6 +372,24 @@ def _build_parser() -> argparse.ArgumentParser:
         type=_positive_int,
         default=_BENCH_MAX_STEPS,
         help=f"单回合步数上限（默认 {_BENCH_MAX_STEPS}）",
+    )
+    benched.add_argument(
+        "--dynamics",
+        choices=("none", "limits", "wheel"),
+        default=None,
+        help="执行器模型（默认用 env 的 none = 纯运动学；wheel 含滞后/死区/轮滑）",
+    )
+    benched.add_argument(
+        "--sensor-noise-std",
+        type=float,
+        default=None,
+        help="LiDAR 测距噪声标准差（米），给了就挂前/后各 60 线 Lidar",
+    )
+    benched.add_argument(
+        "--sensor-latency-steps",
+        type=int,
+        default=None,
+        help="LiDAR 延迟步数（>= 0）；只在有策略读 scan 时影响结果",
     )
     benched.add_argument(
         "--out",

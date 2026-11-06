@@ -361,10 +361,33 @@ class BenchmarkResult:
     protocol_ok: bool = True
     #: `write()` / `benchmark(out=...)` 落盘的路径（空 = 没写文件）
     markdown_path: str = ""
+    #: 被控对象旋钮（None = 该旋钮未设置）；和策略、场景一样属于复现这张表的上下文
+    dynamics: str | None = None
+    sensor_noise_std: float | None = None
+    sensor_latency_steps: int | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.cells, tuple):
             object.__setattr__(self, "cells", tuple(self.cells))
+
+    @property
+    def plant(self) -> dict[str, Any]:
+        """被控对象旋钮：复现一次 benchmark 需要的最小上下文。"""
+        return {
+            "dynamics": self.dynamics,
+            "sensor_noise_std": self.sensor_noise_std,
+            "sensor_latency_steps": self.sensor_latency_steps,
+        }
+
+    def _plant_label(self) -> str:
+        parts = [
+            f"dynamics `{self.dynamics}`" if self.dynamics else "dynamics 用 env 默认"
+        ]
+        if self.sensor_noise_std is not None:
+            parts.append(f"LiDAR 噪声 {self.sensor_noise_std} m")
+        if self.sensor_latency_steps is not None:
+            parts.append(f"LiDAR 延迟 {self.sensor_latency_steps} 步")
+        return " · ".join(parts)
 
     # ── 取格子 / 汇总 ────────────────────────────────────────────
     def cell(self, policy: str, scenario: str, seed: int) -> BenchmarkCell:
@@ -407,6 +430,7 @@ class BenchmarkResult:
             "scenarios": list(self.scenarios),
             "protocol_ok": bool(self.protocol_ok),
             "markdown_path": self.markdown_path,
+            "plant": self.plant,
             "cells": [cell.to_dict() for cell in self.cells],
             "summary": [summary.to_dict() for summary in self.summaries],
         }
@@ -420,6 +444,7 @@ class BenchmarkResult:
             f"车型 `{self.chassis}` · 每格 {self.episodes} 回合 · "
             f"seeds `{list(self.seeds)}` · 场景 `{list(self.scenarios)}`"
         )
+        lines.append(f"被控对象 · {self._plant_label()}")
         lines.append("")
         lines.append(
             "地图种子 = `seed × episodes + 回合号`；同一 (场景, seed) 的地图在全部"
@@ -617,14 +642,85 @@ def _env_scenario_arg(scenario: Any) -> str | None:
     return str(name) if name else None
 
 
-def _default_env_factory(chassis: str, scenario: Any) -> Callable[[int], Any]:
-    """默认 env 工厂：每次调用造一台**新的** env（benchmark 负责 close）。"""
+#: dynamics 的合法取值（与 EnvConfig 同源，早失败好过第一个 reset 才炸）
+DYNAMICS_KINDS: tuple[str, ...] = ("none", "limits", "wheel")
+
+#: 传感器旋钮打开时装的 LiDAR：前向 + 后向各 60 线，参数与默认场景一致
+_BENCH_LIDAR_RAYS = 60
+
+
+def _bench_sensors(
+    noise_std: float | None, latency_steps: int | None
+) -> tuple[Any, ...] | None:
+    """传感器旋钮 → 前/后两支 Lidar；两个旋钮都没给就返回 None（不挂传感器）。"""
+    if noise_std is None and latency_steps is None:
+        return None
+    from chassis_sim.sensors import Lidar
+
+    extra: dict[str, Any] = {}
+    if noise_std is not None:
+        extra["noise_std"] = float(noise_std)
+    if latency_steps is not None:
+        extra["latency_steps"] = int(latency_steps)
+    return (
+        Lidar(
+            name="front",
+            mount=(0.12, 0.0, 0.0),
+            fov=float(np.pi),
+            n_rays=_BENCH_LIDAR_RAYS,
+            **extra,
+        ),
+        Lidar(
+            name="rear",
+            mount=(-0.12, 0.0, float(np.pi)),
+            fov=float(np.pi),
+            n_rays=_BENCH_LIDAR_RAYS,
+            **extra,
+        ),
+    )
+
+
+def _check_plant(
+    dynamics: str | None,
+    sensor_noise_std: float | None,
+    sensor_latency_steps: int | None,
+) -> None:
+    """三个工厂旋钮的取值在开跑前就校验完。"""
+    if dynamics is not None and dynamics not in DYNAMICS_KINDS:
+        raise ValueError(f"dynamics 只能是 {list(DYNAMICS_KINDS)}，收到 {dynamics!r}")
+    if sensor_noise_std is not None and float(sensor_noise_std) < 0.0:
+        raise ValueError(f"sensor_noise_std 必须 >= 0，收到 {sensor_noise_std!r}")
+    if sensor_latency_steps is not None and int(sensor_latency_steps) < 0:
+        raise ValueError(
+            f"sensor_latency_steps 必须 >= 0，收到 {sensor_latency_steps!r}"
+        )
+
+
+def _default_env_factory(
+    chassis: str,
+    scenario: Any,
+    *,
+    dynamics: str | None = None,
+    sensor_noise_std: float | None = None,
+    sensor_latency_steps: int | None = None,
+) -> Callable[[int], Any]:
+    """默认 env 工厂：每次调用造一台**新的** env（benchmark 负责 close）。
+
+    三个旋钮只改这台 env 的**被控对象**（执行器模型与传感器退化），不动策略、
+    不动地图，因此同一 seed 的对照实验可以直接读差异。
+    """
     target = _env_scenario_arg(scenario)
+    sensors = _bench_sensors(sensor_noise_std, sensor_latency_steps)
 
     def factory(seed: int) -> Any:
         from chassis_sim.api import make
 
-        return make(chassis, scenario=target, seed=int(seed))
+        kwargs: dict[str, Any] = {}
+        if dynamics is not None:
+            kwargs["dynamics"] = dynamics
+        if sensors is not None:
+            kwargs["sensors"] = sensors
+        return make(chassis, scenario=target, seed=int(seed), **kwargs)
 
     return factory
 
@@ -705,6 +801,9 @@ def benchmark_cell(
     episodes: int = DEFAULT_EPISODES,
     chassis: str = "ackermann",
     max_steps: int | None = DEFAULT_MAX_STEPS,
+    dynamics: str | None = None,
+    sensor_noise_std: float | None = None,
+    sensor_latency_steps: int | None = None,
     env_factory: Callable[[int], Any] | None = None,
     reset_options: Any = None,
     allow_mismatch: bool = False,
@@ -717,6 +816,7 @@ def benchmark_cell(
     """
     spec = _resolve_policy(policy)
     count = _episode_count(episodes)
+    _check_plant(dynamics, sensor_noise_std, sensor_latency_steps)
     return _run_cell(
         spec,
         _scenario_label(scenario),
@@ -724,7 +824,14 @@ def benchmark_cell(
         episodes=count,
         chassis=chassis,
         max_steps=max_steps,
-        env_factory=env_factory or _default_env_factory(chassis, scenario),
+        env_factory=env_factory
+        or _default_env_factory(
+            chassis,
+            scenario,
+            dynamics=dynamics,
+            sensor_noise_std=sensor_noise_std,
+            sensor_latency_steps=sensor_latency_steps,
+        ),
         reset_options=reset_options,
         map_seed_base=None,
         allow_mismatch=allow_mismatch,
@@ -739,6 +846,9 @@ def benchmark(
     episodes: int = DEFAULT_EPISODES,
     chassis: str = "ackermann",
     max_steps: int | None = DEFAULT_MAX_STEPS,
+    dynamics: str | None = None,
+    sensor_noise_std: float | None = None,
+    sensor_latency_steps: int | None = None,
     env_factory: Callable[[int], Any] | None = None,
     reset_options_factory: Callable[[Any, int], Callable[[int], Any]] | None = None,
     allow_mismatch: bool = False,
@@ -756,6 +866,11 @@ def benchmark(
         episodes: 每格回合数（>= 1）。
         chassis: 车型（ackermann / diff_drive / mecanum ...）。
         max_steps: 单回合步数上限（None = 用 env 自己的 max_steps）。
+        dynamics: 执行器模型 none/limits/wheel；省略 = env 默认（纯运动学）。
+        sensor_noise_std: LiDAR 测距噪声标准差（米）；给了就挂前/后两支 Lidar。
+            **只有读 scan 的策略才会受影响**：pp/dwa 读的是路径几何，噪声对它们
+            没有作用（表格里看不出差异是正确行为，不是旋钮失效）。
+        sensor_latency_steps: LiDAR 延迟步数（>= 0）；同样只在有策略读 scan 时生效。
         env_factory: `seed -> env`；省略时按 (chassis, scenario) 造新 env。
             工厂**每次调用必须返回一台新 env**（benchmark 负责 close）。
         reset_options_factory: `(scenario, seed) -> callable(episode_index) -> options`；
@@ -775,6 +890,7 @@ def benchmark(
     scenario_items = _scenario_list(scenarios)
     seed_values = _seed_list(seeds)
     count = _episode_count(episodes)
+    _check_plant(dynamics, sensor_noise_std, sensor_latency_steps)
 
     protocol_ok = len(seed_values) >= MIN_SEEDS
     if not protocol_ok:
@@ -788,7 +904,13 @@ def benchmark(
         label = _scenario_label(scenario)
         if reset_options_factory is None:
             _check_scenario_loads(scenario)
-        make_env = env_factory or _default_env_factory(chassis, scenario)
+        make_env = env_factory or _default_env_factory(
+            chassis,
+            scenario,
+            dynamics=dynamics,
+            sensor_noise_std=sensor_noise_std,
+            sensor_latency_steps=sensor_latency_steps,
+        )
         for seed in seed_values:
             if reset_options_factory is None:
                 provider = _scenario_options_factory(scenario, seed, count)
@@ -819,6 +941,9 @@ def benchmark(
         episodes=count,
         chassis=chassis,
         protocol_ok=protocol_ok,
+        dynamics=dynamics,
+        sensor_noise_std=sensor_noise_std,
+        sensor_latency_steps=sensor_latency_steps,
     )
     if out is not None:
         written = result.write(out) if not title else result.write(out, title=title)

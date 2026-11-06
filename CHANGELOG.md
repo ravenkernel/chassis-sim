@@ -1,7 +1,31 @@
 # Changelog
 
 All notable changes to `chassis-sim`. This file documents the changes present in
-the working tree; the most recent release is `3.0.3`.
+the working tree; the most recent release is `3.1.0`.
+
+## 3.1.0
+
+可测量的基准与可查的配置：新增被控对象旋钮与中间难度场景，配置字段表改为从 dataclass 生成。
+
+### Breaking
+
+无。`benchmark()` / `benchmark_cell()` 的新参数都是关键字默认值的可选参数。
+
+### Added
+
+- `benchmark(..., dynamics=, sensor_noise_std=, sensor_latency_steps=)` 与同签名的 `benchmark_cell(...)`：分别打开执行器模型（`none`/`limits`/`wheel`）、给前后各挂一支 60 线 `Lidar` 并注入噪声、以及给传感器加零阶保持延迟。非法取值的 `ValueError` 在开跑前抛出（`DYNAMICS_KINDS`）。结果对象新增 `plant` 属性并写进 `to_dict()` 与表格的 `被控对象` 行。
+- CLI 三个旗标：`--dynamics {none,limits,wheel}`、`--sensor-noise-std`、`--sensor-latency-steps`，原样透传给 `benchmark(...)`。
+- 场景 `corridor_medium`：与 `corridor` 同样的两堵长墙，缝隙 0.8 m —— 补上 0.6 m 窄走廊与开阔场地之间的中间档（场景总数 11 → 12）。实测 `pp` 22.2% → 66.7%、`dwa` 33.3% → 88.9%。
+- `tools/gen_config_docs.py`：从 `EnvConfig` 的 dataclass 字段生成 README 两份的 48 字段分组表（六组、含默认值），`--check` 在 CI 的 docs job 里跑；新增 `tests/test_config_reference.py` 锁住覆盖、描述齐全与两份 README 不过期。
+- README 两份新增三小节：难度阶梯（五个场景 × 两策略，n=9）、被控对象保真度（`none` vs `wheel`）、传感器退化（含「`pp`/`dwa` 不读扫描」这一如实说明）。
+
+### Changed
+
+- README 的 `obstacles_sparse` 基线表改用与难度阶梯相同的协议（3 seed × 3 回合、`max_steps=250`），数字随之更新（`pp` 94.6 步、`dwa` 76.2 步）；Wilson 半宽从 ±20.4%（n=15）变为 ±29.9%（n=9）。
+
+### Fixed
+
+- README 两份把 `success_ci` 写成「Wilson 区间的半宽」，而实现取的是 `max(p - low, high - p)`（保守半宽）。文档已按实现改写，数值口径不变。
 
 ## 3.0.3
 
@@ -22,7 +46,6 @@ the working tree; the most recent release is `3.0.3`.
 ### Fixed
 
 - 3.0.0/3.0.1/3.0.2 里 `dense_static` 这类手写障碍场景走 `benchmark` 时是「一张图重放 n 次」：`distinct_maps` 恒为 1、`maps_independent` 恒 False、`success_ci` 恒 None，而同一场景走 `env.reset(seed=...)` 与 `cs.evaluate` 是会重掷的 —— 两条路径口径不一致。现在两条路径共用 `roll_obstacles`，并有测试锁住「同 roll 同地图」。
-
 
 ## 3.0.2
 

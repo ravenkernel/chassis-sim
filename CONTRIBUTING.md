@@ -42,6 +42,7 @@ push, and each must exit 0. This table is a line-by-line mapping onto
 | --- | --- | --- |
 | tests | `env -u PYTHONPATH pytest -q` | job `test` → step `Test` → `pytest -q` (matrix 3.10 / 3.11 / 3.12 / 3.13 × `numpy<2` / `numpy>=2`; 3.13 has no `numpy<2` cell) |
 | docs | `env -u PYTHONPATH python tools/check_readme_blocks.py` | job `docs` → step `Run README python blocks` → `python tools/check_readme_blocks.py` |
+| config docs | `env -u PYTHONPATH python tools/gen_config_docs.py --check` | job `docs` → step `Check generated configuration reference` → `python tools/gen_config_docs.py --check` |
 | lint | `ruff check .` | job `lint` → step `ruff check` → `ruff check .` (ruff 0.17.3) |
 | format | `ruff format --check .` | job `lint` → step `ruff format --check` → `ruff format --check .` |
 | types | `MYPYPATH=src mypy` | job `types` → step `mypy` → `env: MYPYPATH: src`, run `python -m mypy` |
@@ -132,6 +133,8 @@ the five commands above stay authoritative.
 - [ ] `env -u PYTHONPATH pytest -q --cov --cov-report=term:skip-covered --cov-fail-under=82` passes (still at or above 82%).
 - [ ] `env -u PYTHONPATH python tools/check_readme_blocks.py` passes (0 failed; every
       skip carries a `# no-exec` reason).
+- [ ] `env -u PYTHONPATH python tools/gen_config_docs.py --check` passes (the 48-field
+      table in both READMEs matches `EnvConfig`).
 - [ ] New behavior has a test; a bug fix has a test that fails without the fix.
 - [ ] Both READMEs updated if user-visible behavior changed, with byte-identical `python` blocks.
 - [ ] Comments and error messages are Chinese, matching the surrounding file.

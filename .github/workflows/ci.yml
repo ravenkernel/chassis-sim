@@ -193,3 +193,5 @@ jobs:
           pip install -e ".[dev,viz,planning]"
       - name: Run README python blocks
         run: python tools/check_readme_blocks.py
+      - name: Check generated configuration reference
+        run: python tools/gen_config_docs.py --check

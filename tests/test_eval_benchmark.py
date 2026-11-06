@@ -293,3 +293,129 @@ def test_benchmark_runs_headless_without_planning_extra(
     result = benchmark(["random"], ["straight"], seeds=(0,), episodes=1, max_steps=20)
 
     assert result.cells[0].n == 1
+
+
+# ── 被控对象旋钮：dynamics / 传感器退化 ──────────────────────────────
+def _plant_env(
+    *,
+    dynamics: str | None = None,
+    sensor_noise_std: float | None = None,
+    sensor_latency_steps: int | None = None,
+):
+    """用 benchmark 自己的工厂造一台 corridor 上的车（core 场景，不需要 numba）。"""
+    from chassis_sim.eval.benchmark import _default_env_factory
+
+    return _default_env_factory(
+        "ackermann",
+        "corridor",
+        dynamics=dynamics,
+        sensor_noise_std=sensor_noise_std,
+        sensor_latency_steps=sensor_latency_steps,
+    )(0)
+
+
+def _front_scans(env: object, steps: int) -> list[np.ndarray | None]:
+    env.reset(seed=0)
+    scans: list[np.ndarray | None] = []
+    for _ in range(steps):
+        _, _, _, _, info = env.step(np.array([0.0, 0.3], np.float32))
+        reading = info.get("front")
+        scans.append(
+            None if reading is None else np.asarray(reading["scan"], np.float64)
+        )
+    return scans
+
+
+def test_plant_knobs_reach_the_chassis_and_the_sensors() -> None:
+    env = _plant_env(dynamics="wheel", sensor_noise_std=0.02, sensor_latency_steps=1)
+    try:
+        specs = {spec.name: spec for spec in env._sensor_specs}
+        assert env._dynamics_level == "wheel"
+        assert set(specs) == {"front", "rear"}
+        assert specs["front"].n_rays == 60
+        assert specs["front"].noise_std == pytest.approx(0.02)
+        assert specs["front"].latency_steps == 1
+        assert specs["rear"].latency_steps == 1
+    finally:
+        env.close()
+
+
+def test_plant_defaults_leave_the_environment_vanilla() -> None:
+    env = _plant_env()
+    try:
+        assert env._dynamics_level == "none"
+        assert tuple(env._sensor_specs) == ()
+        env.reset(seed=0)
+        _, _, _, _, info = env.step(np.array([0.0, 0.3], np.float32))
+        assert "front" not in info  # 没有配传感器 ⇒ 连键都不出现
+    finally:
+        env.close()
+
+
+def test_sensor_noise_actually_perturbs_the_scan() -> None:
+    clean_env = _plant_env(sensor_noise_std=0.0)
+    noisy_env = _plant_env(sensor_noise_std=0.05)
+    try:
+        clean, noisy = _front_scans(clean_env, 4), _front_scans(noisy_env, 4)
+    finally:
+        clean_env.close()
+        noisy_env.close()
+
+    assert clean[-1] is not None and noisy[-1] is not None
+    delta = noisy[-1] - clean[-1]
+    assert np.max(np.abs(delta)) > 0.0  # 不是逐位相同
+    assert 0.02 < float(np.std(delta)) < 0.12  # 量级就是那 0.05 m
+
+
+def test_sensor_latency_delivers_the_previous_frame_verbatim() -> None:
+    live_env = _plant_env(sensor_latency_steps=0)
+    delayed_env = _plant_env(sensor_latency_steps=1)
+    try:
+        live, delayed = _front_scans(live_env, 4), _front_scans(delayed_env, 4)
+    finally:
+        live_env.close()
+        delayed_env.close()
+
+    assert live[0] is not None and delayed[0] is not None
+    pairs = [(live[i], delayed[i + 1]) for i in range(len(live) - 1)]
+    for earlier, later in pairs:
+        assert later is not None
+        assert np.array_equal(earlier, later)  # 零阶保持：晚一步交付的正是上一帧
+
+
+def test_plant_is_recorded_in_the_result_dict_and_markdown() -> None:
+    result = benchmark(
+        ["zero"],
+        ["corridor"],
+        seeds=(0, 1, 2),
+        episodes=1,
+        max_steps=20,
+        dynamics="limits",
+        sensor_noise_std=0.02,
+        sensor_latency_steps=1,
+    )
+
+    assert result.plant == {
+        "dynamics": "limits",
+        "sensor_noise_std": 0.02,
+        "sensor_latency_steps": 1,
+    }
+    assert result.to_dict()["plant"] == result.plant
+    assert "被控对象" in result.to_markdown()
+    assert len(result.cells) == 3  # 每个 seed 一个格
+    assert all(cell.n == 1 for cell in result.cells)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"dynamics": "tyres"}, "dynamics"),
+        ({"sensor_noise_std": -0.01}, "sensor_noise_std"),
+        ({"sensor_latency_steps": -1}, "sensor_latency_steps"),
+    ],
+)
+def test_bad_plant_values_are_rejected(kwargs: dict[str, object], match: str) -> None:
+    with pytest.raises(ValueError, match=match):
+        benchmark(
+            ["zero"], ["corridor"], seeds=(0,), episodes=1, max_steps=10, **kwargs
+        )

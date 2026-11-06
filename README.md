@@ -597,7 +597,7 @@ The endpoint test still runs, so the CCD detection set is a superset of the disc
 
 `cs.evaluate(env, controller=None, *, episodes, seed=0, max_steps=None, reset_options=None, labels=None, allow_mismatch=False)` runs closed-loop episodes and returns an `EvalResult` with `n`, `successes`, `collisions`, `timeouts`, the three rates, `mean_steps`, `mean_return`, `min_obstacle_clearance`, `success_interval`, `success_ci`, `map_fingerprints`, `distinct_maps`, `maps_independent`, and `same_map_repeated`.
 
-`success_ci` is the half-width of a Wilson 95% interval. It is only meaningful when the episodes are independent samples: when `distinct_maps < n`, the benchmark layer returns `None` and sets `maps_independent=False` instead of printing a number computed from repeated maps.
+`success_ci` is the conservative half-width of a Wilson 95% interval — the larger of the two one-sided distances from the observed rate to the interval bounds. It is only meaningful when the episodes are independent samples: when `distinct_maps < n`, the benchmark layer returns `None` and sets `maps_independent=False` instead of printing a number computed from repeated maps.
 
 ```python
 import chassis_sim as cs
@@ -637,8 +637,8 @@ distinct_maps: 10 maps_independent: True ci: 0.278
 python -m chassis_sim benchmark \
   --scenarios obstacles_sparse \
   --seeds 0 1 2 \
-  --episodes 5 \
-  --max-steps 300 \
+  --episodes 3 \
+  --max-steps 250 \
   --out /tmp/benchmark.md
 ```
 
@@ -646,12 +646,12 @@ The cross-seed summary from that run:
 
 | Policy | Success | 95% CI | Collisions | Mean steps | Distinct maps | Independent |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| `zero` | 0.0% | ±20.4% | 0 | 300.0 | 15 | True |
-| `random` | 0.0% | ±20.4% | 6 | 242.8 | 15 | True |
-| `pp` | 100.0% | ±20.4% | 0 | 88.9 | 15 | True |
-| `dwa` | 100.0% | ±20.4% | 0 | 74.4 | 15 | True |
+| `zero` | 0.0% | ±29.9% | 0 | 250.0 | 9 | True |
+| `random` | 0.0% | ±29.9% | 6 | 183.8 | 9 | True |
+| `pp` | 100.0% | ±29.9% | 0 | 94.6 | 9 | True |
+| `dwa` | 100.0% | ±29.9% | 0 | 76.2 | 9 | True |
 
-The interesting column is the last one. Fifteen episodes produced fifteen distinct maps, so the ±20.4% Wilson half-width is a statement about fifteen independent samples. Now run the scenario `benchmark` uses when `--scenarios` is omitted:
+The interesting column is the last one. Nine episodes produced nine distinct maps, so the ±29.9% Wilson half-width is a statement about nine independent samples. Now run the scenario `benchmark` uses when `--scenarios` is omitted:
 
 ```python
 from chassis_sim.eval import benchmark
@@ -673,6 +673,50 @@ dwa    success=100% ci=— distinct_maps=1 independent=False
 ```
 
 `straight` is a single fixed map. The harness refuses to invent a confidence interval for it: `success_ci` is `None`, `maps_independent` is `False`, and the markdown output prints `—`. A table with `maps_independent=False` is a debugging aid, not a result to quote. `benchmark` also warns when fewer than three seeds are used and sets `protocol_ok=False`.
+
+### Difficulty ladder
+
+`obstacles_sparse` saturates at 100% for both baselines, so it is a smoke test rather than a benchmark. The same protocol on five scenes, from easy to hard — 3 seeds × 3 episodes, `max_steps=250`, no actuator model:
+
+| Scenario | Policy | n | Success | 95% CI | Collisions | Mean steps | Distinct maps | Independent |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `obstacles_sparse` | `pp` | 9 | 100.0% | ±29.9% | 0 | 94.6 | 9 | True |
+| `obstacles_sparse` | `dwa` | 9 | 100.0% | ±29.9% | 0 | 76.2 | 9 | True |
+| `obstacles_dense` | `pp` | 9 | 88.9% | ±32.4% | 1 | 84.0 | 9 | True |
+| `obstacles_dense` | `dwa` | 9 | 100.0% | ±29.9% | 0 | 73.2 | 9 | True |
+| `corridor_medium` (0.8 m) | `pp` | 9 | 66.7% | ±31.2% | 3 | 47.6 | 9 | True |
+| `corridor_medium` (0.8 m) | `dwa` | 9 | 88.9% | ±32.4% | 1 | 53.4 | 9 | True |
+| `corridor` (0.6 m) | `pp` | 9 | 22.2% | ±32.5% | 7 | 25.6 | 9 | True |
+| `corridor` (0.6 m) | `dwa` | 9 | 33.3% | ±31.2% | 6 | 29.1 | 9 | True |
+| `dynamic_crossing` | `pp` | 9 | 0.0% | — | 9 | 13.0 | 1 | False |
+| `dynamic_crossing` | `dwa` | 9 | 0.0% | — | 9 | 13.0 | 1 | False |
+
+`corridor` and `corridor_medium` are the same two walls with the gap widened from 0.6 m to 0.8 m, so the difference between those four rows is free-space width and nothing else: `pp` goes 22.2% → 66.7% and `dwa` 33.3% → 88.9%. `dwa` wins exactly where the gap is narrow, because slowing down is what buys the margin, and that is why it also takes more steps there. `dynamic_crossing` earns its `—`: it is one authored map whose crossing obstacle moves, so nine episodes are not nine independent samples and the harness refuses to quote an interval.
+
+### Plant fidelity
+
+`dynamics="wheel"` turns on the first-order actuator lag, the velocity deadband and wheel slip (`--dynamics none|limits|wheel` on the CLI; the `none` column is the table above). Same protocol:
+
+| Scenario | Policy | `none` success / steps | `wheel` success / steps |
+| --- | --- | ---: | ---: |
+| `obstacles_sparse` | `pp` | 100.0% / 94.6 | 88.9% / 97.3 |
+| `obstacles_sparse` | `dwa` | 100.0% / 76.2 | 88.9% / 80.4 |
+| `obstacles_dense` | `pp` | 88.9% / 84.0 | 77.8% / 84.1 |
+| `obstacles_dense` | `dwa` | 100.0% / 73.2 | 100.0% / 78.3 |
+| `corridor_medium` | `pp` | 66.7% / 47.6 | 66.7% / 54.0 |
+| `corridor_medium` | `dwa` | 88.9% / 53.4 | 88.9% / 58.0 |
+| `corridor` | `pp` | 22.2% / 25.6 | 22.2% / 29.8 |
+| `corridor` | `dwa` | 33.3% / 29.1 | 33.3% / 32.1 |
+| `dynamic_crossing` | `pp` | 0.0% / 13.0 | 0.0% / 21.0 |
+| `dynamic_crossing` | `dwa` | 0.0% / 13.0 | 0.0% / 21.0 |
+
+Lag costs success where the margin is thin — `obstacles_sparse` drops from 100% to 88.9% for both controllers, `obstacles_dense` from 88.9% to 77.8% for `pp` — and it costs time everywhere, because the chassis reaches the commanded velocity a lag behind the plan: mean steps rise 3–16% in the surviving runs. The narrow corridor keeps its success rate and only slows down; it is failure-dominated either way.
+
+### Sensor degradation
+
+`sensor_noise_std` and `sensor_latency_steps` attach a front and a rear 60-ray `Lidar` carrying exactly that degradation, and the delayed frames use zero-order hold: with `sensor_latency_steps=1` the frame read at step k+1 is bit-identical to the frame read at step k with no latency.
+
+What the two knobs do not do is move the tables above. `pp` and `dwa` never read the scan — they consume the pose and the reference path — so sensor degradation only matters for a policy you bring yourself that reads `info["front"]["scan"]`. What having the sensors attached costs is small: two 60-ray LiDARs add about 0.23 ms to a 0.47 ms sensor-free step on the reference machine (one batched raycast call per frame, see Sensors).
 
 ## CLI
 
@@ -727,16 +771,102 @@ first line: delta_max: 0.526
 roundtrip: True
 ```
 
-The fields that matter for the 3.0.0 behaviour are `default_scenario`, `integration_substeps`, `ccd`, `seed`, and `sensor_seed`. `seed` is the run seed used when the env builds its own bridge; `reset(seed=...)` sets the reset seed explicitly, and `sensor_seed` falls back to `seed` when unset.
+The fields worth knowing first are `default_scenario`, `integration_substeps`, `ccd`, `seed`, and `sensor_seed`.
+`seed` is the run seed used when the env builds its own bridge; `reset(seed=...)` sets the reset seed explicitly, and `sensor_seed` falls back to `seed` when unset.
+
+The table below is generated from the dataclass by `python tools/gen_config_docs.py`, so its defaults cannot drift from the code.
+
+<!-- BEGIN config-reference (generated by tools/gen_config_docs.py) -->
+
+**Chassis and action mapping**
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `chassis` | `ackermann` | Chassis the env builds when it owns the bridge: ackermann, diff_drive or mecanum. |
+| `wheelbase` | `0.145` | Distance between axles in metres; it sets the steering angle a curvature maps to. |
+| `delta_max` | `0.526` | Steering limit in radians, used when curvature_action is false. |
+| `kappa_max` | `4.0` | Curvature limit in 1/m, used when curvature_action is true. |
+| `curvature_action` | `False` | Map action[0] to curvature instead of a steering angle. |
+| `v_min` | `-0.6` | Reverse speed limit in m/s. |
+| `v_max` | `1.2` | Forward speed limit in m/s. |
+
+**Arena and reference path**
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `dt` | `0.1` | Control period in seconds; render_fps is derived from it. |
+| `max_steps` | `1000` | Episode length cap, in steps. |
+| `world_bounds` | `None` | Arena extent as (xmin, ymin, xmax, ymax); None keeps the 10x10 m default. |
+| `path_lookahead` | `20.0` | How far ahead the observation reads along the reference path, in metres. |
+| `max_path_points` | `30` | Number of path points carried in the observation. |
+| `path_power` | `2.0` | Resampling exponent; above 1 packs points nearer the vehicle. |
+| `extrapolate_path` | `True` | Keep filling the path window once the reference path runs out. |
+| `path_fill_mode` | `extrapolate` | What fills missing path slots: extrapolate or sentinel. |
+| `path_lookahead_floor` | `1.0` | Minimum lookahead in metres near the goal. |
+| `path_deviation_limit` | `4.0` | Distance from the path that ends the episode, in metres. |
+
+**Goal and episode bookkeeping**
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `goal_dist_threshold` | `0.3` | Distance to the goal that counts as arrival, in metres. |
+| `goal_heading_tolerance` | `0.6` | Heading error at the goal that still counts as arrival, in radians. |
+| `goal_end_wp_count` | `6` | How many final waypoints the goal heading is averaged over. |
+| `goal_end_wp_margin` | `2` | Waypoints skipped before that average, to stay off the last noisy segment. |
+| `curriculum_enabled` | `True` | Expose the curriculum hooks a training loop drives. |
+| `gear_lag_votes` | `3` | Consecutive votes required before the gear direction flips. |
+| `envs_panel_enabled` | `True` | Let a training panel read live per-env status. |
+| `emit_reward_components` | `True` | Put the per-component reward breakdown in info. |
+
+**Integration and actuator dynamics**
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `integration_substeps` | `1` | Segments each control step is integrated over; more segments sample collisions more finely. |
+| `ccd` | `False` | Sweep each integration segment instead of testing only its endpoints. |
+| `dynamics` | `none` | Actuator model: none, limits or wheel. |
+| `accel_max` | `0.0` | Acceleration limit in m/s^2 for the limits and wheel tiers; 0 disables it. |
+| `steer_rate_max` | `0.0` | Steering rate limit in rad/s; 0 disables it. |
+| `v_tau` | `0.15` | First-order lag time constant for speed, in seconds. |
+| `omega_tau` | `0.1` | First-order lag time constant for yaw rate, in seconds. |
+| `v_deadband` | `0.0` | Commanded speed below this magnitude produces no motion, in m/s. |
+| `wheel_slip` | `0.0` | Fraction of commanded speed lost to wheel slip. |
+
+**Sensors and observation**
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `sensors` | `None` | Sequence of sensor specs (Lidar, Imu, WheelOdom); None leaves the bridge sensorless. |
+| `obs_spec` | `None` | Explicit ObsSpec; None builds the default vector for the chassis. |
+| `lidar_max_range` | `10.0` | Ray length cap in metres. |
+| `lidar_noise_std` | `0.03` | LiDAR range noise standard deviation in metres, applied when domain randomisation is on. |
+| `odom_drift_xy` | `0.01` | Per-step odometry drift in x and y, in metres. |
+| `odom_drift_theta` | `0.005` | Per-step odometry drift in heading, in radians. |
+| `domain_rand_enabled` | `False` | Turn the noise and drift knobs on. |
+| `privileged_enabled` | `False` | Add the privileged obstacle-distance vector. |
+| `privileged_bins` | `36` | Number of privileged range bins. |
+| `privileged_range` | `5.0` | Measurement range of those bins, in metres. |
+
+**Scene and seeds**
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `scenario` | `None` | Scenario name or path attached as the default reset options. |
+| `default_scenario` | `dense_static` | Scene the env rolls itself when it gets no options and no injected bridge; None keeps the straight-line fallback. |
+| `seed` | `None` | Run seed for the bridge the env builds; None uses global NumPy state. |
+| `sensor_seed` | `None` | Seed for sensor noise; falls back to seed when unset. |
+
+<!-- END config-reference -->
 
 ## Scenarios
 
-Eleven scenarios ship as YAML. Core scenes need no extra; planning scenes need `numba`.
+Twelve scenarios ship as YAML. Core scenes need no extra; planning scenes need `numba`.
 
 | Scenario | Extra | Obstacles (authored) | Notes |
 | --- | --- | ---: | --- |
 | `straight` | — | 0 | 4 m reference line at `y = 5` |
 | `corridor` | — | 2 | 0.6 m band between two long walls |
+| `corridor_medium` | — | 2 | 0.8 m band; the middle rung between `corridor` and open floor |
 | `dense_static` | — | 14 | hand-written default scene |
 | `dynamic_crossing` | — | moving | 0.25 m circle crossing at 0.3 m/s |
 | `circle` | — | 0 | circular reference path |
