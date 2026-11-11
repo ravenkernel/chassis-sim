@@ -1,7 +1,30 @@
 # Changelog
 
 All notable changes to `chassis-sim`. This file documents the changes present in
-the working tree; the most recent release is `3.1.0`.
+the working tree; the most recent release is `3.1.1`.
+
+## 3.1.1
+
+DWA 的档位保真：新增 `heading_mode="travel"`，让"沿倒车腿倒着开"不再与"掉头正着开"同价。
+默认仍是 `axis`，不传该参数的调用逐位不变；本版只加一个可选档与一处文档更正，仍遵守本仓的
+API 稳定线承诺（semver patch）。
+
+### Breaking
+
+无。`heading_mode` 的默认值仍是 `"axis"`；不传该参数的控制器输出与 3.1.0 逐位相同。
+
+### Added
+
+- `DwaController(heading_mode="travel")`：与 `"axis"` 用同一参考方向（段的运动方向），但**不做模 π 折叠**，因此"沿倒车腿正着开"要付 `w_heading·π²`（默认权重下 2.96）。实测（stage3/4，20 seeds × 400 步，drl-sim 地图）：倒车步的档位合规率 0.461 → **0.848**（stage3）、0.45 → **1.00**（stage4）；含倒车段地图的到达数 5/8 → 6/8、1/4 → 2/4，总成功率 17/20 → 18/20（碰撞数不变）；纯前进地图两臂都是 12/12 与 16/16。负面对照：`travel` 配 `w_vel=0` 会把 stage4 合规拉回 0.224，配 `gear_mode="auto"` 会带来 3/20 碰撞 —— 推荐 `travel` 配默认 `w_vel`。
+
+### Changed
+
+- `heading_mode` 非法取值的 `ValueError` 文案改为列出三档（`'axis' / 'nose' / 'travel'`）。
+
+### Fixed
+
+- 模块 docstring 第 4) 条曾称"验收要的倒车能力由 3) 的弧长前瞻提供"，实测不成立：`gear_mode="off"` 下 stage3/4 的倒车步合规率只有 0.461 / 0.45。文档已按实测改写并指向 `heading_mode="travel"`。
+- 新增 `tests/test_controllers_dwa.py::test_dwa_travel_heading_penalizes_wrong_gear`：锁住"倒车腿上两种走向在 axis 下同价、在 travel 下相差 `w_heading·π²`，而正确方向在两种模式下逐位相同"。
 
 ## 3.1.0
 

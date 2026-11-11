@@ -208,6 +208,59 @@ def test_dwa_progress_term_breaks_forward_backward_tie():
     )
 
 
+def test_dwa_travel_heading_penalizes_wrong_gear():
+    """travel 模式不折叠后，"沿倒车腿正着开"要付 w_heading·π²，axis 模式判它 0。
+
+    这正是倒车腿被调头绕过的机理：axis 折叠后两种走向的 herr 都是 0，选优只剩 w_vel
+    （按 |v| 或 v），于是永远选正着开。travel 只在**错向**候选上偏离 axis，正确方向
+    与 axis 逐位相同 —— 所以它不会改动任何前进段的行为。
+    """
+    xs_rev = np.linspace(2.0, 0.0, 41)  # 运动方向 −x
+    nose_fwd = np.zeros_like(xs_rev)  # 鼻向列恒 +x ⇒ 整段是倒车腿
+    rev_leg = np.column_stack([xs_rev, np.zeros_like(xs_rev), nose_fwd])
+    xs_fwd = np.linspace(0.0, 2.0, 41)
+    fwd_leg = np.column_stack([xs_fwd, np.zeros_like(xs_fwd), np.zeros_like(xs_fwd)])
+
+    def _costs(path, mode):
+        ctrl = DwaController(
+            chassis=_StubDiff(v_max=1.0, v_min=-1.0, omega_max=1.0),
+            dt=DT,
+            w_path=0.0,
+            w_cte_traj=0.0,
+            w_vel=0.0,
+            w_smooth=0.0,
+            w_prog=0.0,
+            w_obs=0.0,
+            heading_mode=mode,
+        )
+        ctrl.set_path(path)
+        # 车放在路径中点、鼻向 +x：±1 m/s × 1 s 的两个候选都**落在路径端点内**，
+        # 横向偏差项因此对两者同值，航向项是唯一能区分它们的量（隔离被测项）。
+        return ctrl._score(
+            1.0, 0.0, 0.0, np.array([0.0, 0.0]), np.array([-1.0, 1.0]), None
+        )
+
+    # 倒车腿：v<0 是正确走向，v>0 是"掉头正着开"
+    axis_rev = _costs(rev_leg, "axis")
+    travel_rev = _costs(rev_leg, "travel")
+    assert abs(axis_rev[0] - axis_rev[1]) < 1e-12, (
+        f"axis 折叠后两种走向应同价，实际 {axis_rev}"
+    )
+    assert abs(travel_rev[0] - axis_rev[0]) < 1e-12, (
+        f"正确倒车方向的代价不应随模式变化，实际 {travel_rev[0]} vs {axis_rev[0]}"
+    )
+    assert abs((travel_rev[1] - travel_rev[0]) - 0.3 * np.pi**2) < 1e-9, (
+        "travel 应把倒车腿上的正向候选罚 w_heading*pi^2，实际差 "
+        f"{travel_rev[1] - travel_rev[0]:.6f}"
+    )
+
+    # 前进腿：方向判据与 axis 同向，正确方向同样逐位不变；反向候选在 travel 下被罚
+    axis_fwd = _costs(fwd_leg, "axis")
+    travel_fwd = _costs(fwd_leg, "travel")
+    assert abs(travel_fwd[1] - axis_fwd[1]) < 1e-12, "前进段正确方向不应变化"
+    assert abs((travel_fwd[0] - travel_fwd[1]) - 0.3 * np.pi**2) < 1e-9
+
+
 def test_dwa_defaults_are_axis_and_progress():
     ctrl = DwaController(chassis=_StubDiff())
     assert ctrl.heading_mode == "axis"

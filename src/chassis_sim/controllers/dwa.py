@@ -39,6 +39,11 @@
    机器人停在 cusp 前 0.35 m 的极限环里跑满 500 步。改成
    `_index_at(当前弧长 + heading_lookahead)` 后参考随弧长单调推进：
    obstacles_dense_reverse 由 0% / 500 步变成 100% / 145 步。
+   axis 模式有个**连带代价**：折叠 mod π 后"沿倒车腿正着开"与"倒着开"同价（两者 herr 折叠后
+   都是 0），选优只剩 `w_vel`（按 |v| 或 v）⇒ 倒车腿一律调头绕过去。3.1.1 新增
+   `heading_mode="travel"`（同一参考、**不折叠**，错向罚回 `w_heading·π²`）专治这一条：
+   实测 stage3 倒车步合规率 0.461 → 0.848、stage4 0.45 → 1.00；含倒车段地图到达数
+   5/8 → 6/8（s3）、1/4 → 2/4（s4），总成功率 17/20 → 18/20（20 seeds × 400 步）。
 前两处合起来把 obstacles_dense 从 0% 成功率提到 100%（翻转次数 87 → 0）。
 4) 档位（gear）语义（`gear_mode="auto"`，**可选档，默认 "off"**）：路径第 3 列存的是**鼻向**
    而不是运动方向（RS 积分），倒车段的判据是"段运动方向与鼻向夹角 > π/2"（与
@@ -52,8 +57,10 @@
    obstacles_dense_reverse 三场景**全部 500 步超时**；加 `min_speed=0.1` 后又变成贴着 cusp
    原地打轮、车尾扫进点式检查（只看车心轨迹 vs 障碍中心）的盲区：obstacles_dense 100% 碰撞、
    foldback_reverse 0%。而且它对 `heading_lookahead` 极敏感（0.25 → 454 步、0.35 → 223 步、
-   0.5 → 超时），是刀尖不是平台。验收要的倒车能力由 3) 的弧长前瞻提供，档位语义作为可选档
-   保留，供 ablation 与"将来把点式障碍检查换成真车体扫掠"时启用。
+   0.5 → 超时），是刀尖不是平台，档位语义作为可选档保留，供 ablation 与"将来把点式障碍检查
+   换成真车体扫掠"时启用。**3.1.1 更正**：3.1.0 曾写"验收要的倒车能力由 3) 的弧长前瞻提供"，
+   实测不成立 —— `gear_mode="off"` 下 stage3/4 的倒车步合规率只有 0.461 / 0.45（等于在该
+   倒着开的段上正着开），补上 `heading_mode="travel"` 才有 0.848 / 1.00。
 旧行为**不能逐位复现**：`heading_mode="nose", w_prog=0.0, gear_mode="off",
 heading_lookahead=0.0` 可退回鼻向判据与对称采样，但 3) 替换掉的"末端最近段参考"正是被修掉
 的那处缺陷，没有开关保留它。
@@ -209,7 +216,8 @@ class DwaController(Controller):
     a) 路径跟踪 `w_path·d_end² + w_heading·herr²`，另加 `w_cte_traj` 乘整条预测轨迹的
        平均 CTE²（只看到末端时低速短时域拿不到横向修正的梯度）；herr = wrap(**运动方向** −
        参考方向)，参考方向由 `heading_mode` 决定（默认 "axis" = 段的运动方向，与鼻向列
-       无关；"nose" = 鼻向判据）；"axis" 仍对 herr 做模 π 折叠；
+       无关；"nose" = 鼻向判据；"travel" = 段的运动方向且**不折叠**，用于要保真的倒车跟随）；
+       "axis"（默认）对 herr 做模 π 折叠（判不出档位），"travel" 不折叠（错向罚 w_heading·π²）；
 
     a2) 弧长进度 `−w_prog·Δs`（默认 2.0）：Δs 是候选末端相对当前位姿在**路径弧长坐标**
        上前进的距离，后退为负（饱和于 `_PROG_BACK_CLIP`）。缺了这一项时"停着"与
@@ -284,9 +292,9 @@ class DwaController(Controller):
         self.w_prog = float(w_prog)
 
         mode = str(heading_mode).strip().lower()
-        if mode not in ("axis", "nose"):
+        if mode not in ("axis", "nose", "travel"):
             raise ValueError(
-                f"heading_mode 只能是 'axis' 或 'nose'，收到 {heading_mode!r}"
+                f"heading_mode 只能是 'axis' / 'nose' / 'travel'，收到 {heading_mode!r}"
             )
         self.heading_mode = mode
 
@@ -573,6 +581,12 @@ class DwaController(Controller):
         travel = ths[:, -1] + np.where(vs < 0.0, np.pi, 0.0)
         if self.heading_mode == "nose":
             herr = wrap_angle(travel - self._segs[2][i_ref])
+        elif self.heading_mode == "travel":
+            # "travel"：与 "axis" 同一参考（段的运动方向），但**不做模 π 折叠** ——
+            # 折叠把"沿倒车腿正着开"与"沿倒车腿倒着开"判成等价（两者 herr 折叠后都是 0），
+            # 于是 w_vel 只按 |v| 选，倒车腿一律调头正着开。不折叠才会给错向 π 的罚
+            # （w_heading·π² ≈ 2.96，与贴路径同量级）。
+            herr = wrap_angle(travel - self._seg_dir[i_ref])
         else:
             herr = wrap_angle(travel - self._seg_dir[i_ref])
             # 模 π 的车轴对齐：折返点前后两条腿鼻向差近 π，鼻向判据会把"沿倒车腿正常

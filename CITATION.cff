@@ -12,8 +12,8 @@ abstract: >-
 authors:
   - family-names: ravenkernel
     email: 30620187+ravenkernel@users.noreply.github.com
-version: "3.1.0"
-date-released: "2026-11-06"
+version: "3.1.1"
+date-released: "2026-11-12"
 url: "https://github.com/ravenkernel/chassis-sim"
 repository-code: "https://github.com/ravenkernel/chassis-sim"
 license: MIT
