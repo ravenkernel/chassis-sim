@@ -1,28 +1,57 @@
 # Changelog
 
 All notable changes to `chassis-sim`. This file documents the changes present in
-the working tree; the most recent release is `3.1.1`.
+the working tree; the most recent release is `3.1.2`.
 
-## 未发布
+## 3.1.2
+
+路径折返（cusp）诚实化：`MapGenerator` 新增 `cusp_split` 开关，把"鼻向列瞬间翻 180° 而几何并未折返"
+的假倒车腿抹掉、真折返点切腿分别平滑。默认 **false** ⇒ 路径、鼻向列与 3.1.1 逐位相同；
+本版只加一个可选开关与一处文档更正，仍遵守本仓的 API 稳定线承诺（semver patch）。
+
+### Breaking
+
+无。`cusp_split` 默认为 `false`；不打开它的调用产出与 3.1.1 逐位相同
+（`tests/test_planning_parity.py` 的金标路径不变）。
 
 ### Added
-- MapGenerator._smooth_path(..., cusp_split=True) + 规划配置键
-  defaults.hybrid_astar.cusp_split（默认 **false** ⇒ 与历史逐位相同）。
-  开启后做三件事：① 只在**几何真的折返**（换档点前后运动方向差 > 150°）处保留倒车段，
-  其余"鼻向列翻 π 但几何没折返"的假翻转一律抹掉；② 在真折返点把路径切成多条腿各自
-  平滑（端点固定，cusp 不再被两端拉平）；③ 平滑后按腿重算鼻向列。
+
+- `MapGenerator._smooth_path(..., cusp_split=True)` + 规划配置键
+  `defaults.hybrid_astar.cusp_split`（默认 **false**）。开启后做三件事：
+  ① 只在**几何真的折返**（换档点前后运动方向差 > 150°）处保留倒车段，其余"鼻向列翻 π 但几何
+  没折返"的假翻转一律抹掉；② 在真折返点把路径切成多条腿各自平滑（端点固定，cusp 不再被两端
+  拉平）；③ 平滑后按腿重算鼻向列。
+
+### Changed
+
+- `_smooth_path` 的两个调用点（`planning/map_generator.py` 约 887 与 1364 行）都从
+  `self._path_cfg` 读 `cusp_split` 键（`bool(... .get("cusp_split", False))`）⇒
+  旧配置目录不必改动，缺键即历史行为。
+
+### Fixed
+
+- 修正"倒车腿不可执行却照样进训练地图"：dense 阶段的规划路径里，鼻向列常在拐点**瞬间翻 180°**
+  而几何并未折返 —— seed1002 的 index 69→70 鼻向 61°→−171°、运动方向只变 44°，折返两侧的腿
+  间距只有 0.02 m。这种路径物理上不可执行（车不能原地掉头），跟路径鼻向的控制器只能"按几何
+  正着开"，于是学生永远学不到倒车。`cusp_split=True` 后这类假腿被抹掉，真折返保留。
+- 新增 `tests/test_cusp_split.py` 4 条：`test_bogus_flip_is_dropped`、
+  `test_bogus_flip_kept_when_option_off`、`test_real_cusp_is_kept_and_vertex_frozen`、
+  `test_option_off_is_bit_identical_to_default`。
 
 ### 为什么要它（实测，2026-11-12）
+
 obstacles_dense 的规划路径里，"倒车腿"多数是假的：鼻向列在拐点**瞬间翻 180°**，而几何
 并未折返——seed1002 的 index 69→70 鼻向 61°→−171°、运动方向只变 44°，折返两侧的腿间
 距只有 0.02 m。这种路径物理上不可执行（车不能原地掉头），DWA 老师的应对是"按几何正着开，
 无视鼻向列"，于是 DAgger 在 dense 里永远学不到倒车。
 
 ### 实测（40 seeds，heading_mode="travel" 老师，500 步预算）
+
 | 阶段 | 关（历史） | 开 |
 |---|---|---|
 | obstacles_dense | 40/40 成功、中位 87 步、13/40 张图有 >10% 倒车腿 | 39/40、88 步、7/40 |
 | obstacles_dense_reverse | 38/40、中位 86 步、13/40 | 38/40、91 步、10/40 |
+
 - 单例：seed1009（dense_reverse）**377 步 → 149 步**，倒车步占比 100% → 38%。
 - 默认关闭时 tests/test_planning_parity.py 的金标路径逐位不变（已验证）。
 
