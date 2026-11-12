@@ -3,6 +3,29 @@
 All notable changes to `chassis-sim`. This file documents the changes present in
 the working tree; the most recent release is `3.1.1`.
 
+## 未发布
+
+### Added
+- MapGenerator._smooth_path(..., cusp_split=True) + 规划配置键
+  defaults.hybrid_astar.cusp_split（默认 **false** ⇒ 与历史逐位相同）。
+  开启后做三件事：① 只在**几何真的折返**（换档点前后运动方向差 > 150°）处保留倒车段，
+  其余"鼻向列翻 π 但几何没折返"的假翻转一律抹掉；② 在真折返点把路径切成多条腿各自
+  平滑（端点固定，cusp 不再被两端拉平）；③ 平滑后按腿重算鼻向列。
+
+### 为什么要它（实测，2026-11-12）
+obstacles_dense 的规划路径里，"倒车腿"多数是假的：鼻向列在拐点**瞬间翻 180°**，而几何
+并未折返——seed1002 的 index 69→70 鼻向 61°→−171°、运动方向只变 44°，折返两侧的腿间
+距只有 0.02 m。这种路径物理上不可执行（车不能原地掉头），DWA 老师的应对是"按几何正着开，
+无视鼻向列"，于是 DAgger 在 dense 里永远学不到倒车。
+
+### 实测（40 seeds，heading_mode="travel" 老师，500 步预算）
+| 阶段 | 关（历史） | 开 |
+|---|---|---|
+| obstacles_dense | 40/40 成功、中位 87 步、13/40 张图有 >10% 倒车腿 | 39/40、88 步、7/40 |
+| obstacles_dense_reverse | 38/40、中位 86 步、13/40 | 38/40、91 步、10/40 |
+- 单例：seed1009（dense_reverse）**377 步 → 149 步**，倒车步占比 100% → 38%。
+- 默认关闭时 tests/test_planning_parity.py 的金标路径逐位不变（已验证）。
+
 ## 3.1.1
 
 DWA 的档位保真：新增 `heading_mode="travel"`，让"沿倒车腿倒着开"不再与"掉头正着开"同价。

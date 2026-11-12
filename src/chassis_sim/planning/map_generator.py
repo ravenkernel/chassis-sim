@@ -884,7 +884,10 @@ class MapGenerator:
 
         # Full post-processing on best candidate only
         path = self._resample_path(best_path, point_spacing)
-        path = self._smooth_path(path, obstacles, margin=self._robot_inflation)
+        path = self._smooth_path(
+            path, obstacles, margin=self._robot_inflation,
+            cusp_split=bool(self._path_cfg.get("cusp_split", False)),
+        )
 
         # Curvature validation (tightened: 2× tolerance, 2% violation ratio)
         # Use vehicle physical turning radius (0.25m), not search param
@@ -967,10 +970,19 @@ class MapGenerator:
     @staticmethod
     def _smooth_path(path: np.ndarray, obstacles: list[dict],
                      num_iters: int = 80, alpha: float = 0.4, beta: float = 0.08,
-                     margin: float = 0.0):
+                     margin: float = 0.0, cusp_split: bool = False):
         """Laplacian 平滑 + 弹性约束，保持避碰。
 
         保留 Hybrid-A* 倒车段朝向：smooth 前检测 backward 点，smooth 后还原翻转。
+
+        cusp_split=True（2026-11-12，默认关 ⇒ 逐位不变）时做三件额外的事：
+          1) 只在**几何真的折返**（换档点前后运动方向差 > cusp_min_turn_deg，默认 150°）
+             处保留倒车段；其余"鼻向列翻 π 但几何没折返"的假翻转一律抹掉 —— 车不能在
+             原地掉头，这种路径物理上不可执行（obstacles_dense seed1002 实测：index
+             69→70 鼻向 61°→−171°，运动方向只变 44°，两腿间距仅 0.02 m）。
+          2) 在真折返点把路径**切成多条腿各自平滑**，避免 cusp 两端互相拉拽把折返揉平
+             （端点不参与平滑，腿内邻域也不跨腿）。
+          3) 平滑后按腿重算鼻向列：运动方向 + 真倒车段的 π。
 
         Args:
             path: (N, 3) waypoints (x, y, theta)。
@@ -979,6 +991,7 @@ class MapGenerator:
             alpha: 平滑强度（0=不平滑, 1=完全拉向邻居均值）。
             beta: 弹性强度（0=可自由移动, 1=固定原位）。
             margin: 碰撞检查的足迹膨胀半径 (m)，保持平滑后净空不被吃掉。
+            cusp_split: 见上（默认 False = 历史行为逐位不变）。
         Returns:
             Smoothed (N, 3) path.
         """
@@ -994,26 +1007,27 @@ class MapGenerator:
         #  numpy 广播，80×N 次调用占总规划耗时 >60%）
         circles, rects = _obstacles_to_arrays(obstacles or [])
 
-        for _ in range(num_iters):
-            max_disp = 0.0  # P2: track convergence
-            for i in range(1, len(xy) - 1):
-                # Laplacian smooth: pull toward neighbors' average
-                smooth_xy = (xy[i - 1] + xy[i + 1]) / 2.0
-                # Elastic: pull back toward original position
-                elastic_xy = original[i]
-                # Combined update
-                new_xy = (1 - alpha - beta) * xy[i] + alpha * smooth_xy + beta * elastic_xy
-                # Check collision at new position (带足迹膨胀, jitted 标量检查)
-                if not _check_collision_point_arr(
-                    float(new_xy[0]), float(new_xy[1]), circles, rects, margin,
-                ):
-                    disp = np.hypot(new_xy[0] - xy[i, 0], new_xy[1] - xy[i, 1])
-                    if disp > max_disp:
-                        max_disp = disp
-                    xy[i] = new_xy
-
-            if max_disp < 1e-3:  # converged — <1mm movement
-                break
+        def _smooth_span(lo: int, hi: int) -> None:
+            """对 [lo, hi] 闭区间内的点做 Laplacian+弹性平滑（端点不动）。"""
+            for _ in range(num_iters):
+                max_disp = 0.0  # P2: track convergence
+                for i in range(lo + 1, hi):
+                    # Laplacian smooth: pull toward neighbors' average
+                    smooth_xy = (xy[i - 1] + xy[i + 1]) / 2.0
+                    # Elastic: pull back toward original position
+                    elastic_xy = original[i]
+                    # Combined update
+                    new_xy = (1 - alpha - beta) * xy[i] + alpha * smooth_xy + beta * elastic_xy
+                    # Check collision at new position (带足迹膨胀, jitted 标量检查)
+                    if not _check_collision_point_arr(
+                        float(new_xy[0]), float(new_xy[1]), circles, rects, margin,
+                    ):
+                        disp = np.hypot(new_xy[0] - xy[i, 0], new_xy[1] - xy[i, 1])
+                        if disp > max_disp:
+                            max_disp = disp
+                        xy[i] = new_xy
+                if max_disp < 1e-3:  # converged — <1mm movement
+                    break
 
         # Detect backward segments from ORIGINAL path BEFORE smoothing.
         # Smoothing changes XY but does NOT change which segments are backward —
@@ -1033,6 +1047,29 @@ class MapGenerator:
             motion_dir = np.arctan2(dy, dx)
             diff = abs(np_angle_wrap(path[-1, 2] - motion_dir))
             orig_is_backward[-1] = diff > np.pi / 2
+
+        if cusp_split:
+            mo = np.diff(xy, axis=0)
+            dirs = np.arctan2(mo[:, 1], mo[:, 0])
+            bounds = list(np.where(orig_is_backward[1:] != orig_is_backward[:-1])[0] + 1)
+            real_cusp = []
+            for b in bounds:
+                if b <= 0 or b >= n - 1:
+                    continue
+                turn = abs(np_angle_wrap(dirs[b] - dirs[b - 1]))
+                if turn > np.radians(150.0):
+                    real_cusp.append(int(b))
+                else:
+                    # 假翻转：几何没折返 ⇒ 把这一段的档位并回上一段（抹掉 π 偏移）
+                    orig_is_backward[b:] = orig_is_backward[b - 1]
+            # 按真折返点分腿平滑（端点固定 ⇒ cusp 不被拉平）
+            starts = [0] + real_cusp
+            ends = real_cusp + [n - 1]
+            for lo, hi in zip(starts, ends):
+                if hi - lo >= 3:
+                    _smooth_span(lo, hi)
+        else:
+            _smooth_span(0, n - 1)
 
         # Recompute headings from smoothed XY (all motion_dir).
         # Then reapply backward flip to segments that were backward pre-smoothing.
@@ -1361,7 +1398,10 @@ class MapGenerator:
             # larger for planning margin — using it for validation is too strict).
             if self._validate_path_curvature(path, point_spacing,
                                               min_turning_radius=0.25):
-                path = self._smooth_path(path, obstacles, margin=self._robot_inflation)
+                path = self._smooth_path(
+                    path, obstacles, margin=self._robot_inflation,
+                    cusp_split=bool(self._path_cfg.get("cusp_split", False)),
+                )
                 # start_theta 取自平滑后的路径首点朝向（_smooth_path 从 XY 重算朝向）
                 if reversed_flag:
                     start_theta = float(path[0, 2])
