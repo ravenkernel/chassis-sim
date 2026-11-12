@@ -970,7 +970,8 @@ class MapGenerator:
     @staticmethod
     def _smooth_path(path: np.ndarray, obstacles: list[dict],
                      num_iters: int = 80, alpha: float = 0.4, beta: float = 0.08,
-                     margin: float = 0.0, cusp_split: bool = False):
+                     margin: float = 0.0, cusp_split: bool = False,
+                     cusp_lock: bool = False):
         """Laplacian 平滑 + 弹性约束，保持避碰。
 
         保留 Hybrid-A* 倒车段朝向：smooth 前检测 backward 点，smooth 后还原翻转。
@@ -1048,11 +1049,11 @@ class MapGenerator:
             diff = abs(np_angle_wrap(path[-1, 2] - motion_dir))
             orig_is_backward[-1] = diff > np.pi / 2
 
+        real_cusp: list[int] = []
         if cusp_split:
             mo = np.diff(xy, axis=0)
             dirs = np.arctan2(mo[:, 1], mo[:, 0])
             bounds = list(np.where(orig_is_backward[1:] != orig_is_backward[:-1])[0] + 1)
-            real_cusp = []
             for b in bounds:
                 if b <= 0 or b >= n - 1:
                     continue
@@ -1068,14 +1069,85 @@ class MapGenerator:
             for lo, hi in zip(starts, ends):
                 if hi - lo >= 3:
                     _smooth_span(lo, hi)
+            # 4) cusp 切线锁（2026-11-12）：分腿平滑各自拉拽 ⇒ 两腿在 cusp 处往往
+            #    只剩 62°–158°（stage0 40 seeds 实测翻转 p50 103.9°），本该 ≈180°
+            #    （真换档 = 停车原地反向）。不锁的话鼻向列在 cusp 上跳 ~117°，参考
+            #    路径本身不可执行、老师的航向标签也自相矛盾。做法：把倒车腿首段绕
+            #    cusp 顶点旋转 φ（= 当前首段方向 → −入段方向 的夹角），后续 4 点的
+            #    转角按权重衰减到 0，于是每条相邻弦的转角都 ≤ 0.45φ，不会在腿内
+            #    制造新折角；旋转不改变点间距（不像平移会把点压向障碍）。任一点压
+            #    进障碍就放弃这次锁定，留给 _validate_path_curvature 拒图。
+            for ci, c in enumerate(real_cusp if cusp_lock else []):
+                if c + 4 >= n:
+                    continue
+                d_in = xy[c] - xy[c - 1]
+                if float(np.hypot(*d_in)) < 1e-9:
+                    continue
+                span = xy[c + 1] - xy[c]
+                if float(np.hypot(*span)) < 1e-9:
+                    continue
+                phi = float(np_angle_wrap(np.arctan2(-d_in[1], -d_in[0])
+                                          - np.arctan2(span[1], span[0])))
+                if abs(phi) < 1e-6:
+                    continue
+                # 斜坡长度按 |φ| 定：每多吸收 0.10 rad 就多给一个点，权重取升余弦
+                # （w_1=1、w_m=0、两端导数为 0）⇒ 相邻弦的转角 ≈ φ·π/(m−1)/2 ≤ 9°。
+                # 固定 5 点、权重 (1.0,0.8,0.55,0.3,0.1) 时首弦之后的回转速率过大：
+                # 实测 stage0 seed1015 的加锁路径在腿内造出 52.4° 折角 ⇒ 被
+                # _validate_path_curvature 判死 ⇒ 掉进 RS 回退（比不锁更差）。
+                cusp_span = real_cusp[ci + 1] if ci + 1 < len(real_cusp) else n - 1
+                room = cusp_span - c
+                if room < 4:
+                    continue
+                m_ramp = int(min(room, max(4, int(np.ceil(abs(phi) / 0.10)))))
+                kk = np.arange(1, m_ramp + 1, dtype=np.float64)
+                weights = 0.5 * (1.0 + np.cos(np.pi * (kk - 1.0) / max(m_ramp - 1.0, 1.0)))
+                cand = xy.copy()
+                origin = xy[c].copy()
+                for k, w in enumerate(weights, start=1):
+                    th = phi * w
+                    cth, sth = np.cos(th), np.sin(th)
+                    rel = xy[c + k] - origin
+                    cand[c + k] = origin + np.array([
+                        cth * rel[0] - sth * rel[1],
+                        sth * rel[0] + cth * rel[1],
+                    ])
+                if any(
+                    _check_collision_point_arr(
+                        float(cand[c + k, 0]), float(cand[c + k, 1]),
+                        circles, rects, margin,
+                    )
+                    for k in range(1, len(weights) + 1)
+                ):
+                    continue
+                xy[:, :] = cand
         else:
             _smooth_span(0, n - 1)
 
         # Recompute headings from smoothed XY (all motion_dir).
         # Then reapply backward flip to segments that were backward pre-smoothing.
-        headings = MapGenerator._compute_path_headings(
-            np.column_stack([xy, np.zeros(n)]),
-        )
+        if real_cusp:
+            # 分腿后必须**按腿**做前向差分：中心的 _compute_path_headings 在 cusp
+            # 相邻点上取的是「上一腿末点 → 下一腿首点」的弦，方向是两腿的混合，
+            # 再叠上 π 偏移就得到一个既不是前进也不是倒车的朝向（实测 swap 出
+            # 3.9° 的假换档、并让 _validate_path_curvature 判死 ⇒ 掉进 RS 回退）。
+            headings = np.empty(n, dtype=np.float64)
+            leg_starts = [0] + real_cusp
+            leg_ends = real_cusp + [n - 1]
+            for lo, hi in zip(leg_starts, leg_ends):
+                if hi <= lo:
+                    continue
+                seg = np.arctan2(*(np.diff(xy[lo:hi + 1], axis=0).T[::-1]))
+                headings[lo:hi] = seg
+                headings[hi] = seg[-1]
+            headings[0] = (
+                headings[0] if np.isfinite(headings[0])
+                else np.arctan2(xy[1, 1] - xy[0, 1], xy[1, 0] - xy[0, 0])
+            )
+        else:
+            headings = MapGenerator._compute_path_headings(
+                np.column_stack([xy, np.zeros(n)]),
+            )
         headings[orig_is_backward] = np_angle_wrap(headings[orig_is_backward] + np.pi)
         return np.column_stack([xy, headings])
 
@@ -1224,9 +1296,34 @@ class MapGenerator:
         return 0.4 * junction_score + 0.3 * balance_score + 0.3 * curv_score
 
     @staticmethod
+    def _max_geometric_kink(path: np.ndarray) -> float:
+        """路径**几何运动方向**的最大单点折角（弧度），跳过换档点。
+
+        为什么不能只看鼻向列：`_smooth_path` 之后鼻向列是**按腿由运动方向重算**的，
+        而 Laplacian 平滑可能把一小段绕行揉成 0.02 m 的尖刺 —— 尖刺处相邻两点几乎重合、
+        位置方向翻转可达 60°，而鼻向列（= 运动方向）在尖刺两侧各自连续，只在**一点**
+        处跳变，2% 的点数阈值挡不住它（2026-11-12 实测 obstacles_sparse seed1004：
+        平滑前最大折角 22.4°/等效半径 0.13 m，平滑后 64.8°/0.02 m ⇒ 平滑**制造**了
+        一条车拐不出来的路径）。换档点（gear 翻转）处运动方向本应翻转 π，必须跳过。
+        """
+        p = np.asarray(path, dtype=np.float64)
+        if len(p) < 4:
+            return 0.0
+        d = np.diff(p[:, :2], axis=0)
+        move = np.arctan2(d[:, 1], d[:, 0])
+        rev = np.abs(np_angle_wrap(move - p[:-1, 2])) > (np.pi / 2.0)
+        dth = np.abs(np_angle_wrap(np.diff(move)))
+        cusp = rev[1:] != rev[:-1]                      # 长度 N-2（段 k → k+1 换档）
+        if cusp.any():
+            dth = dth.copy()
+            dth[cusp] = 0.0
+        return float(dth.max()) if dth.size else 0.0
+
+    @staticmethod
     def _validate_path_curvature(path: np.ndarray, point_spacing: float,
                                   min_turning_radius: float,
-                                  max_violation_ratio: float = 0.02) -> bool:
+                                  max_violation_ratio: float = 0.02,
+                                  max_single_ratio: float = 4.0) -> bool:
         """校验路径是否满足车辆最小转弯半径约束。
 
         Args:
@@ -1234,6 +1331,11 @@ class MapGenerator:
             point_spacing: 路径点间距（米）。
             min_turning_radius: 车辆最小转弯半径（米）。
             max_violation_ratio: 允许的超限点比例（超此比例则拒绝）。
+            max_single_ratio: **单点**折角上限，单位是「理论最大角度差」的倍数
+                （理论最大 = point_spacing / min_turning_radius = 0.2 rad ≈ 11.5°）。
+                点数比例阈值拦不住孤立的尖刺（240 点的路径上 1 个点只占 0.4%），
+                所以另立一条绝对上限；4.0 ⇒ 46°，实测能分开「平滑制造的尖刺」
+                （53°/65°）与规划器本身的离散折角（≤34°）。
 
         Returns:
             True 如果路径可被车辆跟随。
@@ -1246,6 +1348,9 @@ class MapGenerator:
         dtheta = np_angle_wrap(dtheta)
         # 最大允许角度差 = 点间距 / 最小转弯半径
         max_dtheta = point_spacing / max(min_turning_radius, 0.01)
+        # 单点尖刺上限（几何方向，换档点不计）—— 见 _max_geometric_kink
+        if MapGenerator._max_geometric_kink(path) > max_dtheta * max_single_ratio:
+            return False
         # 允许 2x 理论最大角度差（离散采样噪声，was 3x）
         violations = np.sum(np.abs(dtheta) > max_dtheta * 2.0)
         return violations / max(len(dtheta), 1) < max_violation_ratio
@@ -1398,15 +1503,22 @@ class MapGenerator:
             # larger for planning margin — using it for validation is too strict).
             if self._validate_path_curvature(path, point_spacing,
                                               min_turning_radius=0.25):
-                path = self._smooth_path(
+                smoothed = self._smooth_path(
                     path, obstacles, margin=self._robot_inflation,
                     cusp_split=bool(self._path_cfg.get("cusp_split", False)),
                 )
-                # start_theta 取自平滑后的路径首点朝向（_smooth_path 从 XY 重算朝向）
-                if reversed_flag:
-                    start_theta = float(path[0, 2])
-                return path, start_theta
-            # 路径曲率超限，继续 fallback
+                # ⚠️ 必须**再验一次**：Laplacian 平滑会把一小段绕行揉成 0.02 m 的
+                # 尖刺（2026-11-12 实测 obstacles_sparse seed1004：平滑前 22.4°/
+                # 等效半径 0.13 m，平滑后 64.8°/0.02 m ⇒ 车拐不出来，而点数比例阈值
+                # 2% 只有 0.4% 命中挡不住）。_generate_path_with_via 早就是平滑后验，
+                # 这里此前漏了，两条分支不一致。不合规 ⇒ 继续走下面的回退链。
+                if self._validate_path_curvature(smoothed, point_spacing,
+                                                  min_turning_radius=0.25):
+                    # start_theta 取自平滑后的路径首点朝向（_smooth_path 从 XY 重算朝向）
+                    if reversed_flag:
+                        start_theta = float(smoothed[0, 2])
+                    return smoothed, start_theta
+            # 路径曲率超限（或平滑后超限），继续 fallback
 
         # Fallback: RS curve with deterministic 8-direction grid search.
         # 8×8=64 combos sorted by closeness to goal_dir — faster and no

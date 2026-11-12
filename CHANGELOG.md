@@ -1,7 +1,55 @@
 # Changelog
 
 All notable changes to `chassis-sim`. This file documents the changes present in
-the working tree; the most recent release is `3.1.2`.
+the working tree; the most recent release is `3.1.3`.
+
+## 3.1.3
+
+规划路径的**几何可执行性**：`_validate_path_curvature` 新增「单点折角」硬闸，
+`_generate_path_direct` 平滑后再验一次，折返点的鼻向改为**按腿**差分。
+默认行为的变化只落在「原本会被返回的坏路径」上（尖刺 / V 形折返现在被拒、走回退链），
+干净路径逐位不变（`tests/test_planning_parity.py` 金标不变）。
+
+### Breaking
+
+无。默认行为只对「原本会被返回的坏路径」生效：尖刺 / V 形折返现在被拒并走回退链，
+干净路径与 3.1.2（以及 3.1.1）逐位相同；`cusp_split` 仍默认 `false`。
+
+### Added
+
+- `MapGenerator._max_geometric_kink(path) -> float`：按几何运动方向算相邻段最大折角，
+  **跳过换档点**（换档本身就该 ≈180°，不算折角）。
+- `_validate_path_curvature(..., max_single_ratio=4.0)`：新增一条绝对上限
+  `max_dtheta × 4 ≈ 46°`（`max_dtheta = point_spacing / min_turning_radius ≈ 11.5°`）。
+  点数比例阈值拦不住孤立尖刺：240 点的路径上 1 个点只占 0.4%，而阈值是 2%。
+- `_smooth_path(..., cusp_lock=False)`：折返切线锁实验开关（默认**关**，理由见文末记录）。
+
+### Changed
+
+- `_generate_path_direct`：平滑后**再验一次** `_validate_path_curvature`
+  （`_generate_path_with_via` 早就是平滑后验，两条分支此前不一致），不合规继续走 RS 回退链。
+- `_smooth_path` 在 `cusp_split` 且存在真折返时，鼻向列改为**按腿前向差分**
+  （`headings[lo:hi] = atan2(diff)`、末点延用本腿末弦），不再用跨腿的中心差分。
+
+### Fixed
+
+- **平滑制造尖刺**：Laplacian 平滑会把一小段绕行揉成 0.02 m 等效半径（车下限 0.25 m）。
+  受控实验（把平滑当纯函数喂同一条 raw 路径）：seed1004 最大折角 22.4° → 64.8°、
+  seed1022 21.9° → 53.1°。修复后 stage 0 40 seeds 最大几何折角 44.6°、超 46° 的图 0 张
+  （只加硬闸、不改 `_generate_path_direct` 时仍有 168.2° / 8 张 ⇒ 两处都必须改）。
+- **折返点鼻向既非前进也非倒车**：中心差分在 cusp 相邻点取「上一腿末点 → 下一腿首点」的弦，
+  叠上 π 偏移得到一个混合朝向，实测造出 3.9° 的假换档并让校验判死。
+
+### 记录：切线锁 `cusp_lock` 是**负结果**，默认关
+
+`cusp_lock=True` 把倒车腿首弦旋转到与入段严格反向（升余弦斜坡吸收 φ，实测 cusp 翻转
+180.0°，修前 62–158°），但**锁定后的 180° 折返恰好是发卡**：会被 `min_cusp_leg_separation`
+（倒车腿与前进腿最近距离）判死，规划器于是继续重采、最终落到 RS 回退分支 —— 实测 stage 0
+40 seeds 开/关锁得到**逐位相同**的最终图（`cusps=7 flip_min=62.7 flip_p50=137.2 bad=4` 两侧一致）。
+
+⇒ 剩下的 V 形折返（62–158°）全在 **RS 回退路径**里，切线锁够不到；要修得先裁决
+「发卡过滤器 vs 真折返」的取舍（未决，记录在 drl-sim 的 `docs/analysis/2026-11-12-dagger/`）。
+开关保留，方便将来重测。
 
 ## 3.1.2
 
